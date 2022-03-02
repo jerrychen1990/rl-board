@@ -1,0 +1,46 @@
+{
+    "ac_model_kwargs": {
+        "torch_kwargs": {
+            "dims": [
+                64,
+                128,
+                64,
+                64,
+                32
+            ]
+        },
+        "model_type": "MLP"
+    },
+    "mcst_kwargs": {
+        "c": 2,
+        "tau": 1,
+        "simulate_num": 50
+    },
+    "self_play_kwargs": {
+        "episodes": 10000
+    },
+    "buffer_kwargs": {
+        "capacity": 1000
+    },
+    "optimize_kwargs": {
+        "sample_batch_size": 128,
+        "mini_batch_size": 128,
+        "step_size": 100,
+        "interval": 0,
+        "max_step": 10000
+    },
+    "opt_kwargs": {
+        "name": "adam",
+        "lr": 2e-3
+    },
+    "schedule_kwargs": {
+        "name": "StepLR",
+        "gamma": 0.5,
+        "step_size": 1000
+    },
+    "evaluate_kwargs": {
+        "simulate_num": 50,
+        "episodes": 50
+    },
+    "supervised": true
+}
