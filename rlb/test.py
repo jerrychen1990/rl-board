@@ -4,7 +4,6 @@ import types
 from abc import ABC
 from multiprocessing.managers import BaseManager
 
-
 #
 # class C:
 #     def __init__(self, n):
@@ -36,6 +35,8 @@ from multiprocessing.managers import BaseManager
 #
 #
 from typing import Iterable
+
+from snippets import set_kwargs
 
 
 class A:
@@ -75,21 +76,26 @@ class A:
     def __init__(self, a, b):
         print("done")
 
+
 class B(A):
     pass
+
 
 class C(ABC):
     num: str = NotImplemented
 
+
 class D(C):
     pass
+
 
 class A:
     a = 1
     b = 2
 
+
 def get_cls(b):
-    rs = types.new_class(name="B", bases=(A,), kwds={}, exec_body=lambda x:x.update(b=b))
+    rs = types.new_class(name="B", bases=(A,), kwds={}, exec_body=lambda x: x.update(b=b))
     return rs
 
 
@@ -100,20 +106,27 @@ def tuplize(v):
 
 
 tmp = ([['_', '_', '_', '_'],
-  ['_', '_', '_', '_'],
-  ['O', 'X', 'O', '_'],
-  ['X', 'X', 'O', '_']],
- 'X')
+        ['_', '_', '_', '_'],
+        ['O', 'X', 'O', '_'],
+        ['X', 'X', 'O', '_']],
+       'X')
+
+
+class A(object):
+    @set_kwargs(ignores=["b"])
+    def __init__(self, a, b):
+        self.c = a + b
 
 
 if __name__ == "__main__":
-    print(tuplize(tmp))
+    # print(tuplize(tmp))
+
+    tmp = A(1, b=2)
+    print(tmp.__dict__)
 
     # B = get_cls(4)
     # print(B.a)
     # print(B.b)
-
-
 
     # a = B(a=2, b=3)
     # print(a.a)

@@ -12,7 +12,7 @@ import click
 import logging
 from flask import Flask, request, jsonify
 
-from rlb.core import Step
+from rlb.core import ACInfo
 from rlb.utils import ReplayBuffer
 
 app = Flask(__name__)
@@ -43,9 +43,9 @@ def get_ckpt():
 @app.route('/puts', methods=["POST"])
 def puts():
     content = request.json
-    steps = [Step(**e) for e in content]
-    buffer.puts(steps)
-    resp = dict(result="success", data=dict(length=len(buffer), acc_idx=buffer.acc_idx, added=len(steps)))
+    ac_infos = [ACInfo(**e) for e in content]
+    buffer.puts(ac_infos)
+    resp = dict(result="success", data=dict(length=len(buffer), acc_idx=buffer.acc_idx, added=len(ac_infos)))
     # logger.info(resp)
     return jsonify(resp)
 
@@ -58,8 +58,26 @@ def sample(n):
         logger.info(f"{len(buffer)}<{n}, will not sample")
         resp = dict(result="fail", data=[])
     else:
-        steps = buffer.sample(n)
-        resp = dict(result="success", data=[e.dict() for e in steps])
+        ac_infos = buffer.sample(n)
+        resp = dict(result="success", data=[e.dict() for e in ac_infos])
+    return jsonify(resp)
+
+
+@app.route('/gets', methods=["POST"])
+def gets():
+    get_info = request.json
+    n = get_info["n"]
+    idx = get_info["idx"] % len(buffer)
+    end_idx = idx + n
+    logger.info(f"getting ac_info from:{idx} to {end_idx}")
+    ac_infos = []
+    while end_idx > len(buffer):
+        ac_infos += buffer.items[idx:]
+        idx = 0
+        end_idx -= len(buffer)
+
+    ac_infos += buffer.items[idx:end_idx]
+    resp = dict(result="success", data=dict(items=[e.dict() for e in ac_infos], idx=end_idx))
     return jsonify(resp)
 
 
@@ -69,6 +87,12 @@ def reset(capacity):
     ckpts.clear()
     resp = dict(result="success", data=dict(buffer_len=len(buffer), ckpt_len=len(ckpts)))
     buffer.capacity = capacity
+    return jsonify(resp)
+
+@app.route('/clear_buffer')
+def clear_buffer():
+    buffer.clear()
+    resp = dict(result="success", data=dict(buffer_len=len(buffer)))
     return jsonify(resp)
 
 

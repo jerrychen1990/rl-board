@@ -8,15 +8,18 @@
    Description :
 -------------------------------------------------
 """
+from __future__ import annotations
 import logging
 import os
-from abc import abstractmethod, ABC
+from abc import abstractmethod, ABC, ABCMeta
 from enum import Enum
-from typing import Tuple, List
+from multiprocessing import Process
+from typing import Tuple, List, Optional, Type
+from functools import lru_cache
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, validator
 
-from rlb.utils import sample_by_probs
+from rlb.utils import sample_by_probs, tuplize
 
 logger = logging.getLogger(__name__)
 
@@ -28,7 +31,12 @@ class Action(ABC, BaseModel):
 
     @classmethod
     @abstractmethod
-    def from_idx(cls, idx):
+    def from_idx(cls, idx: int) -> Action:
+        raise NotImplementedError
+
+    @classmethod
+    @abstractmethod
+    def from_cmd(cls, cmd: str) -> Action:
         raise NotImplementedError
 
     @abstractmethod
@@ -49,9 +57,32 @@ class TransferInfo(BaseModel):
     extra_info: dict
 
 
-class Env(ABC):
+class State(metaclass=ABCMeta):
+    @abstractmethod
+    def obs(self) -> Tuple:
+        raise NotImplementedError
+
+    @classmethod
+    @abstractmethod
+    def from_obs(cls, obs: Tuple):
+        raise NotImplementedError
+
+    @abstractmethod
+    def render_str(self) -> str:
+        raise NotImplementedError
+
+    @classmethod
+    @abstractmethod
+    def from_render_str(cls, render_str: str):
+        raise NotImplementedError
+
+    def __str__(self):
+        return self.render_str()
+
+
+class Env(metaclass=ABCMeta):
+    action_cls: Type[Action] = NotImplemented
     action_num: int = NotImplemented
-    action_cls: type = NotImplemented
 
     @abstractmethod
     def get_obs(self):
@@ -100,7 +131,7 @@ class ActionInfo(BaseModel):
 
 
 class Agent(ABC):
-    def __init__(self, name, action_num):
+    def __init__(self, name, action_num, *args, **kwargs):
         self._name = name
         self.action_num = action_num
 
@@ -120,7 +151,7 @@ class Agent(ABC):
         else:
             probs = [w / sum_weights for w in weights]
         action_idx, prob = sample_by_probs(probs=probs)
-        logger.debug(f"choose action:{action_idx} with prob:{prob:2.3f}")
+        # logger.debug(f"choose action:{action_idx} with prob:{prob:2.3f}")
         action_info = ActionInfo(action_idx=action_idx, prob=prob, probs=probs)
         return action_info
 
@@ -136,37 +167,6 @@ class RandomAgent(Agent):
         return [1 / self.action_num] * self.action_num
 
 
-class Step(BaseModel):
-    class Config:
-        arbitrary_types_allowed = True
-
-    agent_name: str
-    obs: Tuple
-    action_idx: int
-    prob: float = Field(le=1., ge=0.)
-    probs: List[float]
-    reward: float
-    next_obs: Tuple
-    is_done: bool
-    extra_info: dict = {}
-
-    @classmethod
-    def from_info(cls, agent_name, action_info: ActionInfo, transfer_info: TransferInfo):
-        return cls(agent_name=agent_name, **action_info.dict(), **transfer_info.dict())
-
-
-class Episode(BaseModel):
-    steps: List[Step] = list()
-    cost: float = 0.
-
-    @property
-    def step(self):
-        return len(self.steps)
-
-    def __str__(self):
-        return f"[step:{self.step:d}, cost:{self.cost:5.3f}s]"
-
-
 class Context(BaseModel):
     base_dir: str
 
@@ -178,8 +178,16 @@ class Context(BaseModel):
     def best_model_path(self):
         return os.path.join(self.model_dir, "best_model.pt")
 
+    @property
+    def record_dir(self):
+        return os.path.join(self.base_dir, "records")
+
     def ckpt_model_path(self, ckpt: int):
         return os.path.join(self.model_dir, f"model-{ckpt}.pt")
+
+    @property
+    def config_path(self):
+        return os.path.join(self.base_dir, "config.json")
 
 
 class Piece(str, Enum):
@@ -192,6 +200,77 @@ class Piece(str, Enum):
 
     def __repr__(self):
         return self.value
+
+
+class Step(BaseModel):
+    class Config:
+        arbitrary_types_allowed = True
+
+    agent_name: str
+    obs: tuple
+    action_idx: int
+    prob: float = Field(le=1., ge=0.)
+    probs: List[float]
+    reward: float
+    next_obs: Tuple
+    is_done: bool
+    extra_info: dict = {}
+
+    @validator('obs')
+    def convert2tuple(cls, v):
+        return tuplize(v)
+
+    @property
+    def cur_piece(self) -> Piece:
+        return self.obs[1]
+
+    @property
+    def next_piece(self) -> Piece:
+        return self.next_obs[1]
+
+    @classmethod
+    def from_info(cls, agent_name, action_info: ActionInfo, transfer_info: TransferInfo):
+        return cls(agent_name=agent_name, **action_info.dict(), **transfer_info.dict())
+
+
+class ACInfo(BaseModel):
+    obs: tuple
+    value: float
+    probs: Optional[List[float]]
+    is_in_path: bool = True
+
+    @validator('obs')
+    def convert2tuple(cls, v):
+        return tuplize(v)
+
+
+class Episode(BaseModel):
+    steps: List[Step] = list()
+    cost: float = 0.
+    win_piece: Optional[Piece]
+    winner: Optional[str]
+
+    def to_ac_info(self, value_decay=1.):
+        ac_infos = []
+        origin_value = 1 if self.win_piece else 0
+        value = origin_value
+
+        for step in self.steps[::-1]:
+            value *= value_decay
+            eff = 1 if step.cur_piece == self.win_piece else -1
+            ac_infos.append(ACInfo(obs=step.obs, value=value * eff, probs=step.probs))
+        ac_infos.reverse()
+        last_step = self.steps[-1]
+        ac_infos.append(ACInfo(obs=last_step.next_obs,
+                               value=origin_value if last_step.next_piece == self.win_piece else -origin_value))
+        return ac_infos
+
+    @property
+    def step(self):
+        return len(self.steps)
+
+    def __str__(self):
+        return f"[step:{self.step:d}, cost:{self.cost:5.3f}s]"
 
 
 class Board(object):
@@ -252,100 +331,132 @@ class Board(object):
     def __str__(self):
         return "\n".join("".join(r) for r in self._board)
 
+    @classmethod
+    def from_str(cls, s: str):
+        b = [list(e) for e in s.strip().split("\n")]
+        board_size = len(b)
+        board = Board(row_num=board_size, col_num=board_size, board=b)
+        return board
 
-class BoardEnv(Env, ABC):
+
+class InvalidActionStrategy(Enum):
+    RETRY = "retry"
+    PASS = "pass"
+    FAIL = "fail"
+
+
+class BoardState(State):
+
+    def __init__(self, board: Board, next_piece: Piece):
+        self.board = board
+        self.next_piece = next_piece
+
+    def obs(self) -> Tuple:
+        return tuple(tuple(row) for row in self.board.rows), self.next_piece
+
+    def render_str(self) -> str:
+        return f"\n{self.board}|{self.next_piece}"
+
+    @classmethod
+    def from_render_str(cls, s: str):
+        board_str, piece_str = s.strip().split("|")
+        board = Board.from_str(board_str)
+        piece = Piece(piece_str)
+        return cls(board=board, next_piece=piece)
+
+    @classmethod
+    def from_obs(cls, obs: Tuple):
+        b, next_piece = obs
+        b = [list(e) for e in b]
+        board_size = len(b)
+        board = Board(row_num=board_size, col_num=board_size, board=b)
+        return BoardState(board=board, next_piece=next_piece)
+
+
+class BoardEnv(Env):
     board_size: int = NotImplemented
+    draw2loss: bool = NotImplemented
+    pieces: list = NotImplemented
 
     def __init__(self):
         self._reset()
 
     def _reset(self):
-        self._board = Board(row_num=self.board_size, col_num=self.board_size)
-        self._next_piece = Piece.X
+        board = Board(row_num=self.board_size, col_num=self.board_size)
+        self._state = BoardState(board=board, next_piece=Piece.X)
 
     def reset(self):
         self._reset()
         return self.get_obs()
 
     def render(self, mode="human"):
-        state_info = f"\n{self._board}|{self._next_piece}"
-        logger.info(state_info)
-
-    @classmethod
-    def _get_obs(cls, board: Board, next_piece: Piece) -> Tuple:
-        obs = []
-        for row in board.rows:
-            obs.append(tuple(row))
-        return tuple(obs), next_piece
+        logger.info(self._state.render_str())
 
     def get_obs(self):
-        return self._get_obs(self._board, self._next_piece)
+        return self._state.obs()
 
     @classmethod
-    @abstractmethod
-    def _get_next_piece(cls, piece: Piece) -> Piece:
-        raise NotImplementedError
+    @lru_cache()
+    def _get_next_piece(cls, next_piece):
+        idx = cls.pieces.index(next_piece)
+        idx = (idx + 1) % len(cls.pieces)
+        return cls.pieces[idx]
 
     def _change_piece(self):
-        self._next_piece = self._get_next_piece(self._next_piece)
-
-    @classmethod
-    def _obs2board_piece(cls, obs: Tuple) -> Tuple[Board, Piece]:
-        b, next_piece = obs
-        b = [list(e) for e in b]
-        board = Board(row_num=cls.board_size, col_num=cls.board_size, board=b)
-        return board, next_piece
+        self._state.next_piece = self._get_next_piece(self._state.next_piece)
 
     @classmethod
     @abstractmethod
-    def _get_valid_actions_by_board_piece(cls, board: Board, piece: Piece) -> List[Action]:
+    def _get_valid_actions_by_state(cls, state: BoardState) -> List[Action]:
         raise NotImplementedError
 
     @classmethod
-    def get_valid_actions_by_obs(cls, obs) -> List:
-        board, piece = cls._obs2board_piece(obs)
-        return cls._get_valid_actions_by_board_piece(board, piece)
+    def get_valid_actions_by_obs(cls, obs) -> List[Action]:
+        state = BoardState.from_obs(obs)
+        return cls._get_valid_actions_by_state(state=state)
 
     def get_valid_actions(self) -> List[Action]:
-        obs = self.get_obs()
-        return self.get_valid_actions_by_obs(obs=obs)
+        return self._get_valid_actions_by_state(state=self._state)
 
     @classmethod
     @abstractmethod
-    def _transfer_on_board_piece(cls, board: Board, piece: Piece, action: Action) -> Tuple[TransferInfo, Piece]:
+    def _on_valid_action(cls, state: BoardState, action: Action) -> TransferInfo:
         raise NotImplementedError
+
+    @classmethod
+    @abstractmethod
+    def _on_invalid_action(cls, state: BoardState, action: Action) -> TransferInfo:
+        raise NotImplementedError
+
+    @classmethod
+    def _transfer(cls, state: BoardState, action: Action) -> TransferInfo:
+        # logger.info(state)
+        # breakpoint()
+        valid_actions = cls._get_valid_actions_by_state(state=state)
+        # logger.info(f"{valid_actions=}")
+        if action not in valid_actions:
+            transfer_info = cls._on_invalid_action(state, action)
+        else:
+            transfer_info = cls._on_valid_action(state, action)
+        return transfer_info
 
     @classmethod
     def transfer(cls, obs: Tuple, action: Action) -> TransferInfo:
-        board, next_piece = cls._obs2board_piece(obs)
-        valid_actions = cls._get_valid_actions_by_board_piece(board, next_piece)
-        if action not in valid_actions:
-            transfer_info, next_piece = cls._on_invalid_action(board, next_piece, action)
-        else:
-            transfer_info, next_piece = cls._transfer_on_board_piece(board, next_piece, action)
-        return transfer_info
-
-    @classmethod
-    @abstractmethod
-    def _on_invalid_action(cls, board: Board, piece: Piece,
-                           action: Action) -> Tuple[TransferInfo, Piece]:
-        raise NotImplementedError
-
-    def _set_piece(self, piece: Piece):
-        self._next_piece = piece
+        state = BoardState.from_obs(obs)
+        return cls._transfer(state=state, action=action)
 
     def step(self, action: Action) -> TransferInfo:
-
-        valid_actions = self._get_valid_actions_by_board_piece(self._board, self._next_piece)
-        if action not in valid_actions:
-            transfer_info, next_piece = self._on_invalid_action(self._board, self._next_piece, action)
-        else:
-            transfer_info, next_piece = self._transfer_on_board_piece(self._board, self._next_piece, action)
-        self._set_piece(next_piece)
-        return transfer_info
+        return self._transfer(state=self._state, action=action)
 
     def close(self):
         pass
 
     def seed(self, seed):
         pass
+
+
+class BaseProcess(Process):
+    def __init__(self, context: Context, run_kwargs=dict(), *args, **kwargs):
+        super(BaseProcess, self).__init__(*args, **kwargs)
+        self.context = context
+        self.run_kwargs = run_kwargs

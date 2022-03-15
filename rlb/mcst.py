@@ -8,17 +8,19 @@
    Description :
 -------------------------------------------------
 """
+import copy
 import logging
 import math
 from typing import List, Tuple, Dict, Type, Callable
 
 import numpy as np
 from pydantic import BaseModel, Field
+from snippets import discard_kwarg
 from torch.nn import Module
 
-from rlb.actor_critic import ModuleActorCritic
+from rlb.model import ModuleActorCritic
 from rlb.core import Agent, Env, TransferInfo, Action
-from rlb.utils import sample_by_weights
+from rlb.utils import sample_by_weights, format_dict
 
 logger = logging.getLogger(__name__)
 
@@ -33,14 +35,11 @@ class Info(BaseModel):
         return self.w / self.n if self.n else 0.
 
     def __str__(self):
-        return f"Info(n={self.n}, p={self.p:2.3f}, w={self.w:2.3f}, q={self.q:2.3f})"
+        return f"Info(n={self.n:2d}, p={self.p:2.3f}, w={self.w: 2.3f}, q={self.q:+2.3f})"
 
 
-def putc(q, n, n_total, p, c, noise_rate=0, noise=0):
-    if noise_rate:
-        p = (1 - noise_rate) * p + noise_rate * noise
-
-    u = c * p * math.sqrt(n_total+1) / (1 + n)
+def putc(q, n, n_total, p, c):
+    u = c * p * math.sqrt(n_total + 1) / (1 + n)
     return q + u
 
 
@@ -67,28 +66,40 @@ class Node:
         assert self.is_expanded()
         return len(self.children) == 0
 
-    def get_choose_child_detail(self, mode, noises, noise_rate=0, tau=1., **kwargs):
+    def get_choose_child_detail(self, mode, noise_kwargs: dict = {}, ignore_prob=False, tau=1., c=1):
         assert self.is_expanded()
         details = []
         n_total = sum([i.n for i, node in self.children.values()])
+        action_num = len(self.children)
+        noise_rate = noise_kwargs.get("noise_rate", 0.)
+        if noise_rate:
+            noises = np.random.dirichlet([noise_kwargs["dirichlet_alpha"]] * action_num)
 
-        for action, (info, node) in self.children.items():
+        for idx, (action, (info, node)) in enumerate(self.children.items()):
+            extra_info = dict()
             if mode == "putc":
-                noise = noises[action.to_idx()]
-                weight = putc(q=info.q, n=info.n, p=info.p, n_total=n_total,
-                              noise=noise, noise_rate=noise_rate, **kwargs)
+                if ignore_prob:
+                    p = 1 / action_num
+                else:
+                    p = info.p
+                    if noise_rate:
+                        p = (1 - noise_rate) * p + noise_rate * noises[idx]
+                        extra_info.update(noise=noises[idx])
+                extra_info.update(p=p, c=c)
+                weight = putc(q=info.q, n=info.n, p=p, n_total=n_total, c=c)
             elif mode == "visit_tau":
                 weight = visit_tau(n=info.n, tau=tau)
+                extra_info.update(tau=tau)
             else:
                 raise ValueError(f"invalid mode:{mode}")
-            details.append((action, info, node, weight))
+            details.append((action, info, node, extra_info, weight))
 
         if logger.level == logging.DEBUG:
             details.sort(key=lambda x: x[-1], reverse=True)
-            logger.debug(f"details({mode}):")
-            for action, info, node, weight in details:
-                logger.debug(f"action:{action}, info:{info}, noise:{noises[action.to_idx()]:2.3f},"
-                             f" tau:{tau:1.1f}, weight:{weight:2.3f}, next_node:{node}")
+            logger.debug(f"details({mode}), obs:[{self.obs}]:")
+            for action, info, node, extra_info, weight in details:
+                logger.debug(f"action:{action}, info:{info},  extra_info:{format_dict(extra_info)}, "
+                             f"weight:{weight:8.3f}, next_node:{node}")
         return details
 
     def __str__(self):
@@ -106,8 +117,6 @@ class MCST:
         self.transfer_func = transfer_func
         self.valid_action_func = valid_action_func
         self.noise_kwargs = noise_kwargs
-        self.noise_rate = noise_kwargs.get("noise_rate", 0)
-        self.dirichlet_alpha = noise_kwargs.get("dirichlet_alpha", 0)
 
     def get_node(self, obs) -> Node:
         if obs not in self.node_dict:
@@ -115,19 +124,14 @@ class MCST:
             self.node_dict[obs] = node
         return self.node_dict[obs]
 
-    def _select(self, node: Node):
+    @discard_kwarg
+    def _select(self, node: Node, c, ignore_prob=False, noise_kwargs={}):
         trace = []
         while node.is_expanded() and not node.is_leaf():
-            if self.noise_rate:
-                noises = np.random.dirichlet([self.dirichlet_alpha] * self.action_num)
-            else:
-                noises = [0]*self.action_num
-
-            details = node.get_choose_child_detail(mode="putc", noises=noises, noise_rate=self.noise_rate, c=self.c)
+            details = node.get_choose_child_detail(mode="putc", noise_kwargs=noise_kwargs, c=c, ignore_prob=ignore_prob)
             weights = np.array([e[-1] for e in details])
-
             idx, prob = sample_by_weights(weights, deterministic=True)
-            action, info, next_node, weight = details[idx]
+            action, info, next_node, weight, extra_info = details[idx]
             trace.append((node, action, prob, next_node))
             node = next_node
         return node, trace
@@ -148,7 +152,6 @@ class MCST:
                     node.children[action] = Info(p=prob), next_node
         node.value = value
         logger.debug(f"set value:{value:2.3f} to node:{node}")
-
         return value
 
     @classmethod
@@ -160,9 +163,9 @@ class MCST:
             info.w += w
             w = - w
 
-    def simulate(self, node: Node, ac_model):
+    def simulate(self, node: Node, ac_model, **kwargs):
         logger.debug("selecting")
-        leaf_node, trace = self._select(node)
+        leaf_node, trace = self._select(node, **kwargs)
         logger.debug("expanding")
         value = self._expand_eval(node=leaf_node, ac_model=ac_model)
         logger.debug("backwarding")
@@ -185,38 +188,45 @@ class TauSchedule:
         else:
             alpha = 1
             for k, v in self._schedule:
-                if step_idx < v:
+                if step_idx < k:
                     break
                 else:
-                    alpha = alpha
+                    alpha = v
             return t * alpha
 
 
 class MCSTAgent(Agent):
-    def __init__(self, env_cls: Type[Env], ac_model: ModuleActorCritic, simulate_num,
-                 tau_kwargs=dict(tau=1.), c=2, noise_kwargs={}, **kwargs):
+    def __init__(self, env_cls: Type[Env], ac_model: ModuleActorCritic, simulate_kwargs: dict,
+                 tau_kwargs=dict(tau=1.), **kwargs):
         super(MCSTAgent, self).__init__(action_num=ac_model.action_num, **kwargs)
         self.env_cls = env_cls
         self.ac_model = ac_model
         self.mcst = MCST(transfer_func=env_cls.transfer, valid_action_func=env_cls.get_valid_actions_by_obs,
-                         c=c, noise_kwargs=noise_kwargs, action_num=self.action_num)
+                         action_num=self.action_num)
+        self.simulate_kwargs = copy.copy(simulate_kwargs)
+        self.simulate_num = self.simulate_kwargs.pop("simulate_num")
         self.tau_schedule = TauSchedule(**tau_kwargs)
-        self.simulate_num = simulate_num
 
     def get_weights(self, obs, mode, step_idx, **kwargs) -> List[float]:
         node = self.mcst.get_node(obs)
         logger.debug(f"simulating for {self.simulate_num} times...")
+        simulate_kwargs = copy.copy(self.simulate_kwargs)
+        if mode == "test":
+            simulate_kwargs["noise_rate"] = 0.
+
         for idx in range(self.simulate_num):
             logger.debug(f"simulation:{idx + 1}")
-            self.mcst.simulate(node, ac_model=self.ac_model)
+            self.mcst.simulate(node, ac_model=self.ac_model, **simulate_kwargs)
 
         tau = self.tau_schedule.get_tau(mode, step_idx)
+        logger.debug(f"{tau=:2.3f}")
 
-        details = node.get_choose_child_detail(mode="visit_tau", tau=tau, noises=[0]*self.action_num)
+        details = node.get_choose_child_detail(mode="visit_tau", tau=tau)
         weights = [0.] * self.action_num
-        for action, info, node, weight in details:
+        for action, info, node, extra_info, weight in details:
             action_idx = action.to_idx()
             weights[action_idx] = weight
+        # logger.info(weights)
         return weights
 
     def update_model(self, ac_model: Module):

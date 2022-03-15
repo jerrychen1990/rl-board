@@ -9,42 +9,27 @@
 -------------------------------------------------
 """
 import logging
-from abc import abstractmethod
-from typing import List
+from typing import List, Type
 
-from rlb.core import Agent
-from rlb.tictactoe import TicTacToe
-from rlb.gravity_gobang import GravityGoBang, GravityGoBangAction
+from rlb.core import Agent, Action
 
 
-class AbsHumanAgent(Agent):
+class HumanAgent(Agent):
+    def __init__(self, action_cls: Type[Action], *args, **kwargs):
+        super(HumanAgent, self).__init__(*args, **kwargs)
+        self.action_cls = action_cls
+
     def get_weights(self, obs, mode, **kwargs) -> List[float]:
         while True:
             try:
                 logging.info("input action:")
                 cmd = input().strip()
-                action_idx = self._cmd2action(cmd)
+                action_idx = self._cmd2action_idx(cmd)
                 probs = [0] * self.action_num
                 probs[action_idx] = 1.
                 return probs
             except Exception as e:
                 logging.exception(e)
 
-    @abstractmethod
-    def _cmd2action(self, cmd):
-        pass
-
-
-class TicTacToeHumanAgent(AbsHumanAgent):
-    def _cmd2action(self, cmd):
-        r, c = cmd.split(",")
-        r, c = int(r.strip()), int(c.strip())
-        action = TicTacToe.TicTacToeAction(r=r, c=c)
-        return action.to_idx()
-
-
-class GravityGoBangHumanAgent(AbsHumanAgent):
-    def _cmd2action(self, cmd):
-        c = int(cmd.strip())
-        action = GravityGoBangAction(c=c)
-        return action.to_idx()
+    def _cmd2action_idx(self, cmd: str) -> int:
+        return self.action_cls.from_cmd(cmd)

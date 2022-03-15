@@ -1,0 +1,67 @@
+{
+    "ac_model_kwargs": {
+        "torch_kwargs": {
+            "dims": [
+                64,
+                64,
+                32,
+                32
+            ]
+        },
+        "model_type": "MLP"
+    },
+    "mcst_kwargs": {
+        "tau_kwargs": {
+            "tau": 1,
+            "schedule": [
+                [
+                    6,
+                    3
+                ]
+            ]
+        },
+        "simulate_kwargs": {
+            "c": 1,
+            "simulate_num": 30,
+            "noise_kwargs": {
+                "noise_rate": 0.25,
+                "dirichlet_alpha": 0.1
+            }
+        }
+    },
+    "self_play_kwargs": {
+        "epoch_episodes": 200,
+        "epochs": 10
+    },
+    "optimize_kwargs": {
+        "optimize_steps": 100,
+        "optimize_batch_size": 128,
+        "actor_loss_type": "ce",
+        "opt_kwargs": {
+            "name": "adam",
+            "lr": 5e-3
+        },
+        "schedule_kwargs": {
+            "name": "StepLR",
+            "gamma": 0.5,
+            "step_size": 4
+        }
+    },
+    "evaluate_kwargs": {
+        "eval_model": [
+            false,
+            {}
+        ],
+        "compare": [
+            true,
+            {
+                "episodes": 50,
+                "threshold": 0.52
+            }
+        ]
+    },
+    "supervised": false,
+    "sync": true,
+    "value_decay": 0.95,
+    "always_update": true
+}

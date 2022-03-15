@@ -13,6 +13,8 @@ import logging
 from typing import List
 
 import numpy as np
+import torch
+from snippets import ensure_file_path
 
 logger = logging.getLogger(__name__)
 
@@ -115,3 +117,51 @@ def add_noise(pi, noise_rate):
 def get_current_datetime_str(fmt="%Y-%m-%dT%H:%M:%S"):
     dt = datetime.datetime.now()
     return dt.strftime(fmt=fmt)
+
+
+@ensure_file_path
+def save_torch_model(model, path):
+    logger.info(f"saving model to path:{path}")
+    torch.save(model, path)
+
+
+def format_dict(d):
+    items = []
+    for k, v in d.items():
+        if isinstance(v, float):
+            items.append(f"{k}={v:2.3f}")
+        else:
+            items.append(f"{k}={v}")
+    return f"[{', '.join(items)}]"
+
+def entropy(probs: np.array, eps=1e-9):
+    assert probs.ndim == 2
+    detail = -probs * np.log(probs + eps)
+    #     print(detail.sum(axis=-1))
+    return float(detail.sum(axis=-1).mean())
+
+
+def cross_entropy(probs, tgt_probs, eps=1e-9):
+    assert probs.ndim == 2
+    assert probs.shape == tgt_probs.shape
+
+    detail = -tgt_probs * np.log(probs + eps)
+    #     print(detail.sum(axis=-1))
+    return float(detail.sum(axis=-1).mean())
+
+
+def kl_div(probs, tgt_probs, eps=1e-9):
+    ce = cross_entropy(probs, tgt_probs, eps)
+    e = entropy(tgt_probs, eps)
+    return ce - e
+
+def mse(value, tgt_value):
+    assert value.shape==tgt_value.shape
+    return float(np.square(value - tgt_value).mean())
+
+
+def tuplize(v):
+    if isinstance(v, list) or isinstance(v, tuple):
+        return tuple([tuplize(e) for e in v])
+    return v
+

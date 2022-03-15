@@ -13,26 +13,35 @@ from typing import List
 
 import requests
 
-from rlb.core import Step
+from rlb.core import ACInfo
 
 logger = logging.getLogger(__name__)
 
 _buffer_url = "http://127.0.0.1:5000"
 
 
-def puts_steps(steps: List[Step]):
-    data = [s.dict() for s in steps]
+def puts_ac_infos(ac_infos: List[ACInfo]):
+    data = [s.dict() for s in ac_infos]
     resp = requests.post(url=f"{_buffer_url}/puts", json=data)
     resp.raise_for_status()
     # logger.info(resp.json())
     return resp.json()
 
 
-def sample_steps(n):
+def sample_ac_infos(n):
     resp = requests.get(url=f"{_buffer_url}/sample/{n}")
     resp.raise_for_status()
-    steps = [Step(**e) for e in resp.json()["data"]]
-    return steps
+    ac_infos = [ACInfo(**e) for e in resp.json()["data"]]
+    return ac_infos
+
+def get_ac_infos(idx, n):
+    data = dict(idx=idx, n=n)
+    resp = requests.post(url=f"{_buffer_url}/gets", json=data)
+    resp.raise_for_status()
+    json_resp = resp.json()
+    next_idx = json_resp["data"]["idx"]
+    ac_infos = [ACInfo(**e) for e in json_resp["data"]["items"]]
+    return ac_infos, next_idx
 
 
 def add_ckpt(ckpt, model_path):
@@ -51,5 +60,10 @@ def get_ckpt():
 def reset_buffer(capacity):
     # logger.info(f"{_buffer_url}/reset/{capacity}")
     resp = requests.get(url=f"{_buffer_url}/reset/{capacity}")
+    resp.raise_for_status()
+    return resp.json()
+
+def clear_buffer():
+    resp = requests.get(url=f"{_buffer_url}/clear_buffer")
     resp.raise_for_status()
     return resp.json()
