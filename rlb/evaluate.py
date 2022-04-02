@@ -9,7 +9,6 @@
 -------------------------------------------------
 """
 import collections
-import copy
 import logging
 import os
 from typing import List
@@ -21,12 +20,11 @@ from snippets import flat, discard_kwarg
 from tqdm import tqdm
 
 from rlb.actor_critic import ActorCriticAgent
-from rlb.client import add_ckpt
-from rlb.core import ACInfo, Episode, BoardState
+from rlb.board_core import ACInfo, Episode, BoardState
 from rlb.engine import compare_agents
 from rlb.mcst import MCSTAgent
 from rlb.model import ModuleActorCritic
-from rlb.utils import save_torch_model, format_dict, cross_entropy, kl_div, mse, entropy
+from rlb.utils import format_dict, cross_entropy, kl_div, mse, entropy
 
 logger = logging.getLogger(__name__)
 cur_dir = os.path.abspath(os.path.dirname(__file__))
@@ -52,21 +50,21 @@ def eval_probs_values(probs: np.array, tgt_probs: np.array, values: np.array, tg
 
 def evaluate_episodes(episodes: List[Episode], perfect_ac_infos: List[ACInfo], show_detail=False):
     steps = flat([e.steps for e in episodes])
-    logger.info(f"evaluating {len(episodes)} episodes with {len(steps)} steps")
+    logger.info(f"evaluating {len(episodes)} history episodes with {len(steps)} steps")
     infos = dict()
     for step in steps:
-        obs = step.obs
+        state = step.state
         action_idx = step.action_idx
         probs = step.probs
-        if obs not in infos:
-            infos[obs] = collections.defaultdict(list)
-        infos[obs][action_idx].append(probs)
+        if state not in infos:
+            infos[state] = collections.defaultdict(list)
+        infos[state][action_idx].append(probs)
 
     valid_acs = [e for e in perfect_ac_infos if e.probs]
-    key_obss = set([e.obs for e in valid_acs if e.is_in_path])
+    key_obss = set([e.state for e in valid_acs if e.is_in_path])
 
-    # logger.info(f"{len(infos)} obs visited")
-    valid_ac_dict = {ac.obs: ac.probs for ac in valid_acs}
+    # logger.info(f"{len(infos)} state visited")
+    valid_ac_dict = {ac.state: ac.probs for ac in valid_acs}
     cover = len(infos) / len(valid_acs)
     key_cover = len(set(infos.keys()) & key_obss) / len(key_obss)
     obss = list(infos.keys())
@@ -78,8 +76,8 @@ def evaluate_episodes(episodes: List[Episode], perfect_ac_infos: List[ACInfo], s
 
     if show_detail:
         infos = sorted(infos.items(), key=lambda x: sum([len(e) for e in x[1].values()]), reverse=True)
-        for obs, action_dict in infos[:5]:
-            logger.info(BoardState.from_obs(obs))
+        for state, action_dict in infos[:5]:
+            logger.info(BoardState.from_obs(state))
             for action, probs in sorted(action_dict.items(), key=lambda x: len(x[1]), reverse=True):
                 logger.info(f"action:{action} visited {len(probs)} times")
                 for prob in probs[:5]:
@@ -130,7 +128,7 @@ class Evaluator:
         tgt_probs = torch.from_numpy(np.array([s.probs for s in steps])).float()
 
         for step in tqdm(steps):
-            action_idx, prob, probs = mcst_agent.choose_action(obs=step.next_obs, mode="test")
+            action_idx, prob, probs = mcst_agent.choose_action(state=step.next_state, mode="test")
             agent_probs.append(probs)
 
         agent_probs = torch.Tensor(agent_probs).float()

@@ -17,7 +17,8 @@ from snippets import jdump_lines, merge_dicts
 from snippets.decorators import LogTimeCost, log_cost_time, set_kwargs
 
 from rlb.constant import DRAW
-from rlb.core import Agent, Episode, Step, Env, BoardEnv
+from rlb.core import Agent
+from rlb.board_core import Episode, Step, Env, BoardEnv
 
 logger = logging.getLogger(__name__)
 
@@ -62,24 +63,23 @@ class BoardGame:
         assert len(agents) == len(self.pieces)
         self.piece2agent = dict(zip(self.pieces, self.agents))
 
-    def _prepare(self, is_render=False, callbacks=[], episode_idx=0, acc_step_idx=0):
+    def _prepare(self, is_render=False, callbacks=[], episode_idx=0):
         on_callbacks(callbacks=callbacks, event="episode_start", episode_idx=episode_idx)
-        obs = self.env.reset()
+        state = self.env.reset()
         if is_render:
-            # logger.info(f"episode:{episode_idx + 1} starts")
             self.env.render()
-        return obs
+        return state
 
-    def _step(self, agent, obs, mode, is_render, callbacks, step_idx, acc_step_idx):
+    def _step(self, agent, state, mode, is_render, callbacks, step_idx, acc_step_idx):
         on_callbacks(callbacks=callbacks, event="step_start", step_idx=step_idx, acc_step_idx=acc_step_idx)
         if is_render:
             logger.info(f"agent:{agent}'s action...")
-        action_info = agent.choose_action(obs=obs, mode=mode, step_idx=step_idx, acc_step_idx=acc_step_idx)
+        action_info = agent.choose_action(state=state, mode=mode, step_idx=step_idx, acc_step_idx=acc_step_idx)
         action = self.action_cls.from_idx(action_info.action_idx)
         if is_render:
             logger.info(f"agent:{agent.name} take action:{action} with prob:{action_info.prob:1.3f}")
         transfer_info = self.env.step(action)
-        step = Step(agent_name=agent.name, obs=obs, **action_info.dict(), **transfer_info.dict())
+        step = Step(agent_name=agent.name, state=state, **action_info.dict(), **transfer_info.dict())
 
         if is_render:
             self.env.render()
@@ -121,18 +121,15 @@ class BoardGame:
     def run(self, mode: str, max_step=None, is_render=False, callbacks=[], episode_idx=0, acc_step_idx=0):
 
         with LogTimeCost(info=f"episode:{episode_idx + 1}", level=logging.DEBUG) as cost:
-            obs = self._prepare(is_render=is_render, callbacks=callbacks, episode_idx=episode_idx,
-                                acc_step_idx=acc_step_idx)
+            state = self._prepare(is_render=is_render, callbacks=callbacks, episode_idx=episode_idx)
             steps = []
             step_idx = 0
-            cur_piece = self.env.pieces[0]
-
             while True:
-                agent = self.piece2agent[cur_piece]
-                step = self._step(agent=agent, obs=obs, mode=mode, is_render=is_render, callbacks=callbacks,
+                agent = self.piece2agent[state.piece]
+                step = self._step(agent=agent, state=state, mode=mode, is_render=is_render, callbacks=callbacks,
                                   step_idx=step_idx, acc_step_idx=acc_step_idx)
                 steps.append(step)
-                obs = step.next_obs
+                state = step.next_state
                 extra_info = step.extra_info
 
                 step_idx += 1
@@ -143,7 +140,6 @@ class BoardGame:
                     if winner and is_render:
                         logger.info(f"{winner}[{win_piece}] win")
                     break
-                cur_piece = step.next_piece
         episode = Episode(steps=steps, cost=cost.cost, winner=winner, win_piece=win_piece)
         return episode
 

@@ -13,7 +13,7 @@ from typing import List
 
 import requests
 
-from rlb.core import ACInfo
+from rlb.board_core import ACInfo
 
 logger = logging.getLogger(__name__)
 

@@ -15,7 +15,7 @@
             "tau": 1,
             "schedule": [
                 [
-                    4,
+                    3,
                     3
                 ]
             ]
@@ -31,15 +31,15 @@
     },
     "self_play_kwargs": {
         "epoch_episodes": 200,
-        "epochs": 10
+        "epochs": 20
     },
     "optimize_kwargs": {
-        "optimize_steps": 100,
+        "optimize_steps": 50,
         "optimize_batch_size": 128,
         "actor_loss_type": "ce",
         "opt_kwargs": {
             "name": "adam",
-            "lr": 5e-3
+            "lr": 1e-2
         },
         "schedule_kwargs": {
             "name": "StepLR",

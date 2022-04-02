@@ -13,8 +13,9 @@ import os
 
 import torch
 
+from rlb.board_core import BoardEnv, Episode, Env
 from rlb.client import get_ckpt, puts_ac_infos
-from rlb.core import Agent, BoardEnv, Episode, Context, BaseProcess, Env
+from rlb.core import Agent, Context
 from rlb.engine import AbsCallback, RecordCallback, run_board_games
 
 logger = logging.getLogger(__name__)
@@ -28,7 +29,7 @@ class SelfPlayCallback(AbsCallback):
         self.value_decay = value_decay
 
     def _update_buffer(self, episode: Episode):
-        ac_infos = episode.to_ac_info(self.value_decay)
+        ac_infos = episode.to_ac_infos(self.value_decay)
         puts_ac_infos(ac_infos)
 
     def _update_agent_model(self):
@@ -69,8 +70,9 @@ class SelfPlayer:
     def self_play(self, episodes: int, value_decay=1.,
                   record_episode_size=None, show_episode_size=None, is_render=False):
         return self_play(context=self.context, agent=self.agent, env=self.env, episodes=episodes,
-                  value_decay=value_decay, record_episode_size=record_episode_size, show_episode_size=show_episode_size,
-                  is_render=is_render)
+                         value_decay=value_decay, record_episode_size=record_episode_size,
+                         show_episode_size=show_episode_size,
+                         is_render=is_render)
 
     def run(self):
         return self_play(context=self.context, agent=self.agent, env=self.env, **self.run_kwargs)

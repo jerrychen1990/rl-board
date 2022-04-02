@@ -18,29 +18,29 @@ from typing import List, Tuple, Type
 import numpy as np
 import torch
 import torch.nn.functional as F
-from snippets import get_batched_data, merge_dicts
+from snippets import get_batched_data
 from torch import Tensor
 from torch.nn import Sequential, Linear, ReLU, Tanh, Conv2d, Flatten, Module, MaxPool2d
 from torch.optim import Adam, Optimizer
 from torch.optim.lr_scheduler import StepLR, ExponentialLR
 
 from rlb.actor_critic import ActorCritic
-from rlb.core import Step, Piece, Context, BoardEnv, ACInfo
-from rlb.utils import format_dict
+from rlb.board_core import Piece, BoardEnv, ACInfo, BoardState
+from rlb.core import Context
 
 logger = logging.getLogger(__name__)
 
 
-class ModuleActorCritic(Module, ActorCritic, ABC):
+class ModuleActorCritic(Module, ActorCritic):
     def __init__(self, action_num, *args, **kwargs):
         Module.__init__(self, *args, **kwargs)
         ActorCritic.__init__(self, action_num=action_num)
 
     def ac_info2arrays(self, ac_infos: List[ACInfo]):
-        act_obs = np.array([self.obs2array(s.obs) for s in ac_infos if s.probs is not None]).astype(np.float32)
+        act_obs = np.array([self.state2array(s.state) for s in ac_infos if s.probs is not None]).astype(np.float32)
         tgt_probs = np.array([s.probs for s in ac_infos if s.probs is not None]).astype(np.float32)
 
-        critic_obs = np.array([self.obs2array(s.obs) for s in ac_infos]).astype(np.float32)
+        critic_obs = np.array([self.state2array(s.state) for s in ac_infos]).astype(np.float32)
         tgt_values = np.array([s.value for s in ac_infos]).astype(np.float32)
         return act_obs, critic_obs, tgt_probs, tgt_values
 
@@ -65,6 +65,7 @@ class ModuleActorCritic(Module, ActorCritic, ABC):
             if param.grad is not None:
                 param.grad.data.clamp_(-1, 1)
         optimizer.step()
+        return weights, tgt_probs, values, tgt_values, loss
 
     def train(self, ac_infos: List[ACInfo], optimizer: Optimizer, epochs: int, mini_batch_size=32,
               schedule=None, show_lines=None):
@@ -72,15 +73,14 @@ class ModuleActorCritic(Module, ActorCritic, ABC):
         interval = int(math.ceil(epochs / show_lines)) if show_lines else 1
 
         for epoch in range(epochs):
-            eval_infos = []
-            for batch in get_batched_data(ac_infos, mini_batch_size):
-                eval_infos.append(self.learn_on_batch(ac_infos=batch, optimizer=optimizer))
-            eval_info = merge_dicts(*eval_infos, reduce_func=lambda x, y: x + [y] if isinstance(x, list) else [x, y])
-            eval_info = {k: sum(v) / len(v) for k, v in eval_info.items()}
+            losses = []
 
+            for batch in get_batched_data(ac_infos, mini_batch_size):
+                losses.append(self.learn_on_batch(ac_infos=batch, optimizer=optimizer)[-1].detach().item())
+            loss = sum(losses)/len(losses)
             if (epoch + 1) % interval == 0:
                 schedule_info = f"[lr:{schedule.get_last_lr()[0]:1.6f}]" if schedule else ""
-                logger.info(f"[{epoch + 1}/{epochs}] {schedule_info} {format_dict(eval_info)}")
+                logger.info(f"[{epoch + 1}/{epochs}] {schedule_info} {loss=:2.3f}")
             if schedule:
                 schedule.step()
 
@@ -92,34 +92,40 @@ class ModuleActorCritic(Module, ActorCritic, ABC):
     def forward_critic(self, x):
         raise NotImplementedError
 
-    def obs2tensor(self, obs) -> Tensor:
-        return torch.from_numpy(self.obs2array(obs)).float()
+    def state2tensor(self, state: BoardState) -> Tensor:
+        return torch.from_numpy(self.state2array(state)).float()
 
     @abstractmethod
-    def obs2array(self, obs) -> np.array:
+    def state2array(self, state: BoardState) -> np.array:
         raise NotImplementedError
 
     @lru_cache(maxsize=None)
-    def act_and_criticize(self, obs) -> Tuple[List[float], float]:
-        x = self.obs2tensor(obs)
+    def act_and_criticize(self, state: BoardState) -> Tuple[List[float], float]:
+        x = self.state2tensor(state)
         weights, value = self.forward(x)
         probs, value = F.softmax(weights, dim=-1).detach().numpy(), value.item()
         return probs, value
 
-    def criticize(self, obs) -> float:
-        x = self.obs2tensor(obs)
+    @lru_cache(maxsize=None)
+    def criticize(self, state: BoardState) -> float:
+        x = self.state2tensor(state)
         features = self.encoder(x)
         value = self.critic_decoder(features).item()
         return value
 
-    def act(self, obs) -> List[float]:
-        x = self.obs2tensor(obs)
+    @lru_cache(maxsize=None)
+    def act(self, state) -> List[float]:
+        x = self.state2tensor(state)
         features = self.encoder(x)
         weights = self.actor_decoder(features)
         probs = F.softmax(weights).detach().numpy()
         return probs
 
-    @property
+    def clean_cache(self):
+        self.act.cache_clear()
+        self.criticize.cache_clear()
+        self.act_and_criticize.cache_clear()
+
     @abstractmethod
     def input_shape(self):
         raise NotImplementedError
@@ -129,7 +135,7 @@ class MLPActorCritic(ModuleActorCritic, ABC):
     def __init__(self, dims: List, action_num, *args, **kwargs):
         super(MLPActorCritic, self).__init__(action_num=action_num, *args, **kwargs)
         fc_layers = []
-        in_dim = reduce(lambda x, y: x * y, self.input_shape)
+        in_dim = reduce(lambda x, y: x * y, self.input_shape())
         for dim in dims:
             fc_layers.append(Linear(in_dim, dim))
             fc_layers.append(ReLU())
@@ -216,23 +222,21 @@ class BoardMLPActorCritic(MLPActorCritic):
         self.board_size = board_size
         super(BoardMLPActorCritic, self).__init__(*args, **kwargs)
 
-    def obs2array(self, obs) -> np.array:
+    def state2array(self, state: BoardState) -> np.array:
         t = []
-        b, p = obs
-        for row in b:
+        for row in state.board.rows:
             for e in row:
                 if e == Piece.BLANK:
                     t.append(0)
-                elif e == p:
+                elif e == state.piece:
                     t.append(1)
                 else:
                     t.append(-1)
-        t = np.array(t)
+        t = np.array(t + [state.pass_num])
         return t
 
-    @property
     def input_shape(self):
-        return self.board_size, self.board_size
+        return self.board_size * self.board_size + 1,
 
 
 class BoardCNNActorCritic(CNNActorCritic, ABC):
@@ -244,9 +248,9 @@ class BoardCNNActorCritic(CNNActorCritic, ABC):
     def state_shape(self):
         return 3, self.board_size, self.board_size
 
-    def obs2tensor(self, obs) -> Tensor:
+    def state2tensor(self, state) -> Tensor:
         t = []
-        b, p = obs
+        b, p = state
         for row in b:
             tmp = []
             for e in row:

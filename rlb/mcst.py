@@ -18,6 +18,7 @@ from pydantic import BaseModel, Field
 from snippets import discard_kwarg
 from torch.nn import Module
 
+from rlb.board_core import BoardState
 from rlb.model import ModuleActorCritic
 from rlb.core import Agent, Env, TransferInfo, Action
 from rlb.utils import sample_by_weights, format_dict
@@ -51,8 +52,8 @@ def visit_tau(n, tau):
 
 
 class Node:
-    def __init__(self, obs):
-        self.obs = obs
+    def __init__(self, state:BoardState):
+        self.state = state
         self.children: Dict[Action, Tuple[Info, Node]] = None
         self.value = 0.
         self.is_done = False
@@ -96,14 +97,14 @@ class Node:
 
         if logger.level == logging.DEBUG:
             details.sort(key=lambda x: x[-1], reverse=True)
-            logger.debug(f"details({mode}), obs:[{self.obs}]:")
+            logger.debug(f"details({mode}), state:[{self.state}]:")
             for action, info, node, extra_info, weight in details:
                 logger.debug(f"action:{action}, info:{info},  extra_info:{format_dict(extra_info)}, "
                              f"weight:{weight:8.3f}, next_node:{node}")
         return details
 
     def __str__(self):
-        return f"{self.obs}[{self.value:2.3f}]"
+        return f"{self.state}[{self.value:2.3f}]"
 
     def __repr__(self):
         return str(self)
@@ -118,11 +119,11 @@ class MCST:
         self.valid_action_func = valid_action_func
         self.noise_kwargs = noise_kwargs
 
-    def get_node(self, obs) -> Node:
-        if obs not in self.node_dict:
-            node = Node(obs=obs)
-            self.node_dict[obs] = node
-        return self.node_dict[obs]
+    def get_node(self, state) -> Node:
+        if state not in self.node_dict:
+            node = Node(state=state)
+            self.node_dict[state] = node
+        return self.node_dict[state]
 
     @discard_kwarg
     def _select(self, node: Node, c, ignore_prob=False, noise_kwargs={}):
@@ -137,16 +138,15 @@ class MCST:
         return node, trace
 
     def _expand_eval(self, node: Node, ac_model):
-        action_probs, value = ac_model.act_and_criticize(obs=node.obs)
+        action_probs, value = ac_model.act_and_criticize(state=node.state)
         if not node.is_done:
             node.children = dict()
-            valid_actions = self.valid_action_func(obs=node.obs)
+            valid_actions = self.valid_action_func(state=node.state)
             if valid_actions:
-                action_probs, value = ac_model.act_and_criticize(obs=node.obs)
+                action_probs, value = ac_model.act_and_criticize(state=node.state)
                 for action in valid_actions:
-                    transfer_info: TransferInfo = self.transfer_func(obs=node.obs, action=action)
-                    next_obs = transfer_info.next_obs
-                    next_node = self.get_node(next_obs)
+                    transfer_info: TransferInfo = self.transfer_func(state=node.state, action=action)
+                    next_node = self.get_node(transfer_info.next_state)
                     next_node.is_done = transfer_info.is_done
                     prob = action_probs[action.to_idx()]
                     node.children[action] = Info(p=prob), next_node
@@ -201,14 +201,14 @@ class MCSTAgent(Agent):
         super(MCSTAgent, self).__init__(action_num=ac_model.action_num, **kwargs)
         self.env_cls = env_cls
         self.ac_model = ac_model
-        self.mcst = MCST(transfer_func=env_cls.transfer, valid_action_func=env_cls.get_valid_actions_by_obs,
+        self.mcst = MCST(transfer_func=env_cls.transfer, valid_action_func=env_cls.get_valid_actions_by_state,
                          action_num=self.action_num)
         self.simulate_kwargs = copy.copy(simulate_kwargs)
         self.simulate_num = self.simulate_kwargs.pop("simulate_num")
         self.tau_schedule = TauSchedule(**tau_kwargs)
 
-    def get_weights(self, obs, mode, step_idx, **kwargs) -> List[float]:
-        node = self.mcst.get_node(obs)
+    def get_weights(self, state:BoardState, mode:str, step_idx, **kwargs) -> List[float]:
+        node = self.mcst.get_node(state)
         logger.debug(f"simulating for {self.simulate_num} times...")
         simulate_kwargs = copy.copy(self.simulate_kwargs)
         if mode == "test":

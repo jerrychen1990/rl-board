@@ -11,7 +11,7 @@
 import logging
 from typing import List, Type
 
-from rlb.core import Agent, Action
+from rlb.core import Agent, Action, State
 
 
 class HumanAgent(Agent):
@@ -19,7 +19,7 @@ class HumanAgent(Agent):
         super(HumanAgent, self).__init__(*args, **kwargs)
         self.action_cls = action_cls
 
-    def get_weights(self, obs, mode, **kwargs) -> List[float]:
+    def get_weights(self, state: State, **kwargs) -> List[float]:
         while True:
             try:
                 logging.info("input action:")

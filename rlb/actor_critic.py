@@ -10,63 +10,63 @@
 """
 import logging
 import random
-from abc import ABC
+from abc import ABC, ABCMeta
 from typing import List, Tuple, Type
 
 import numpy as np
 
+from rlb.board_core import BoardState
 from rlb.core import Agent, Env
 from rlb.utils import weights2probs
 
 
-class Critic(ABC):
-    def criticize(self, obs) -> float:
+class Critic:
+    def criticize(self, state: BoardState) -> float:
         raise NotImplementedError
 
 
-class Actor(ABC):
+class Actor:
     def __init__(self, action_num):
         self.action_num = action_num
 
-    def act(self, obs) -> List[float]:
+    def act(self, state: BoardState) -> List[float]:
         raise NotImplementedError
 
 
-class ActorCritic(Critic, Actor, ABC):
-    def act_and_criticize(self, obs) -> Tuple[List[float], float]:
+class ActorCritic(Critic, Actor, metaclass=ABCMeta):
+    def act_and_criticize(self, state: BoardState) -> Tuple[List[float], float]:
         raise NotImplementedError
-
 
 
 class RandomActorCritic(ActorCritic):
 
-    def criticize(self, obs) -> float:
-        return random.random()
+    def criticize(self, state: BoardState) -> float:
+        return random.uniform(-1, 1)
 
-    def act(self, obs) -> List[float]:
+    def act(self, state: BoardState) -> List[float]:
         weights = np.array([random.random() for _ in range(len(self.action_num))])
         probs = weights2probs(weights)
         return probs
 
-    def act_and_criticize(self, obs, valid_actions: List) -> Tuple[List[float], float]:
-        v = self.criticize(obs)
-        probs = self.act(obs, valid_actions)
+    def act_and_criticize(self, state: BoardState) -> Tuple[List[float], float]:
+        v = self.criticize(state)
+        probs = self.act(state)
         return probs, v
 
 
 class ActorCriticAgent(Agent):
-    def __init__(self, ac_model: ActorCritic, env_cls: Type[Env], *args, **kwargs):
-        super(ActorCriticAgent, self).__init__(action_num=ac_model.action_num, *args, **kwargs)
-        self.ac_model = ac_model
+    def __init__(self, ac: ActorCritic, env_cls: Type[Env], *args, **kwargs):
+        assert ac.action_num == self.env_cls.action_num
+        super(ActorCriticAgent, self).__init__(action_num=ac.action_num, *args, **kwargs)
+        self.ac = ac
         self.env_cls = env_cls
-        assert self.ac_model.action_num == self.env_cls.action_num
 
-    def get_weights(self, obs, mode, **kwargs) -> List[float]:
-        logging.debug(obs)
-        probs, value = self.ac_model.act_and_criticize(obs)
+    def get_weights(self, state, mode, **kwargs) -> List[float]:
+        logging.debug(state)
+        probs, value = self.ac.act_and_criticize(state)
         weights = probs
-        details = [(self.env_cls.action_cls.from_idx(idx), prob) for idx, prob in enumerate(weights)]
-        for action, prob in sorted(details, key=lambda x: x[1], reverse=True):
-            logging.debug(f"action:{action}, prob:{prob:2.3f}")
-        logging.debug(f"current state value:{value:2.3f}")
+        # details = [(self.env_cls.action_cls.from_idx(idx), prob) for idx, prob in enumerate(weights)]
+        # for action, prob in sorted(details, key=lambda x: x[1], reverse=True):
+        #     logging.debug(f"action:{action}, prob:{prob:2.3f}")
+        # logging.debug(f"current state value:{value:2.3f}")
         return weights

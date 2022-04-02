@@ -12,7 +12,7 @@ import click
 import logging
 from flask import Flask, request, jsonify
 
-from rlb.core import ACInfo
+from rlb.board_core import ACInfo
 from rlb.utils import ReplayBuffer
 
 app = Flask(__name__)

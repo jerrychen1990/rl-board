@@ -19,7 +19,7 @@ from rlb.utils import save_torch_model
 warnings.simplefilter("ignore", UserWarning)
 
 from multiprocessing import Pipe
-from snippets import jdump, get_current_datetime_str, jdump_lines, flat, log_cost_time
+from snippets import jdump, get_current_datetime_str, jdump_lines, flat, log_cost_time, LogTimeCost
 
 from rlb.client import reset_buffer, puts_ac_infos
 from rlb.core import Context, RandomAgent
@@ -134,38 +134,41 @@ class ReinforcementLearning:
             logger.info(f"epoch:{epoch + 1}/{epochs}")
 
             if not supervised:
-                logger.info("running self play")
-                history, scoreboard = self_player.self_play(episodes=epoch_episodes, value_decay=value_decay,
-                                                            show_episode_size=max(epoch_episodes // 5, 1))
+                with LogTimeCost(info=f"self_play:{epoch + 1}", level=logging.INFO):
+                    logger.info("running self play")
+                    history, scoreboard = self_player.self_play(episodes=epoch_episodes, value_decay=value_decay,
+                                                                show_episode_size=max(epoch_episodes // 5, 1))
 
-                record_path = os.path.join(self.context.record_dir,
-                                           f"{total_episodes}-{total_episodes + len(history)}.jsonl")
-                jdump_lines(history, record_path)
-                ac_infos = flat([e.to_ac_info(value_decay=value_decay) for e in history])
-                logger.info(f"generated {len(ac_infos)} ac_infos")
-                puts_ac_infos(ac_infos)
-                total_episodes += len(history)
+                    record_path = os.path.join(self.context.record_dir,
+                                               f"{total_episodes}-{total_episodes + len(history)}.jsonl")
+                    jdump_lines(history, record_path)
+                    ac_infos = flat([e.to_ac_infos(value_decay=value_decay) for e in history])
+                    logger.info(f"generated {len(ac_infos)} ac_infos")
+                    puts_ac_infos(ac_infos)
+                    total_episodes += len(history)
 
-            logger.info("running optimize")
-            optimizer.optimize_one_ckpt(optimize_steps, optimize_batch_size,
-                                        actor_loss_type=optimize_kwargs["actor_loss_type"])
-            optimizer.schedule.step()
-            optimizer.save_model()
-            logger.info(f"cache_info:{playing_model.act_and_criticize.cache_info()}")
-            playing_model.act_and_criticize.cache_clear()
+            with LogTimeCost(info=f"optimize:{epoch + 1}", level=logging.INFO):
+                logger.info("running optimize")
+                optimizer.optimize_one_ckpt(optimize_steps, optimize_batch_size,
+                                            actor_loss_type=optimize_kwargs["actor_loss_type"])
+                optimizer.schedule.step()
+                optimizer.save_model()
+                logger.info(f"cache_info:{playing_model.act_and_criticize.cache_info()}")
+                playing_model.act_and_criticize.cache_clear()
 
 
-            logger.info(f"running evaluate on ckpt:{optimizer.step}")
-            if not supervised:
-                evaluator.evaluate_episodes(episodes=history)
-            tag = evaluator.evaluate(model=training_model,
-                                     agent_kwargs=self.config["mcst_kwargs"],
-                                     eval_info=evaluate_kwargs)
-            if tag and not always_update:
-                logger.info("saving best model")
-                save_torch_model(model=training_model, path=self.context.best_model_path)
-                logger.info("updating best model")
-                playing_model.load_state_dict(training_model.state_dict())
+            with LogTimeCost(info=f"evaluate:{epoch + 1}", level=logging.INFO):
+                logger.info(f"running evaluate on ckpt:{optimizer.step}")
+                if not supervised:
+                    evaluator.evaluate_episodes(episodes=history)
+                tag = evaluator.evaluate(model=training_model,
+                                         agent_kwargs=self.config["mcst_kwargs"],
+                                         eval_info=evaluate_kwargs)
+                if tag and not always_update:
+                    logger.info("saving best model")
+                    save_torch_model(model=training_model, path=self.context.best_model_path)
+                    logger.info("updating best model")
+                    playing_model.load_state_dict(training_model.state_dict())
 
         logger.info("saving the model after training")
         save_torch_model(playing_model, path=self.context.best_model_path)
