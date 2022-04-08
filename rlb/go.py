@@ -14,7 +14,7 @@ import types
 from collections import defaultdict
 from typing import List, Type
 
-from rlb.board_core import Board, Piece, BoardEnv, BoardState, Cord, CordPiece
+from rlb.core import Board, Piece, BoardEnv, State, Cord, CordPiece
 from rlb.core import TransferInfo
 from rlb.gobang import BoardAction
 
@@ -43,7 +43,7 @@ class Block:
         self.cord_pieces = sorted(cord_pieces)
         self.piece = cord_pieces[0].piece
         self.neighbors = sorted(neighbors)
-        self.liberties: List[CordPiece] = [e for e in self.neighbors if e.piece == Piece.BLANK]
+        self.liberties: List[CordPiece] = [e for e in self.neighbors if e.piece == Piece.B]
         self.liberty_num = len(self.liberties)
         self.is_alive = self.liberty_num > 0
 
@@ -54,7 +54,7 @@ class Block:
         return len(self.cord_pieces)
 
     def is_kill_by(self, cord_piece: CordPiece) -> bool:
-        if cord_piece.piece in [Piece.BLANK, self.piece]:
+        if cord_piece.piece in [Piece.B, self.piece]:
             return False
         if self.liberty_num > 1:
             return False
@@ -62,7 +62,7 @@ class Block:
 
 
 def get_block(board: Board, cord_piece: CordPiece) -> Block:
-    assert cord_piece.piece != Piece.BLANK
+    assert cord_piece.piece != Piece.B
     q = [cord_piece]
     cord_pieces = set()
     neighbors = set()
@@ -87,7 +87,7 @@ def board2blocks(board: Board) -> List[Block]:
 
     for r, row in enumerate(board.rows):
         for c, p in enumerate(row):
-            if p == Piece.BLANK:
+            if p == Piece.B:
                 continue
             cord_piece = CordPiece(r=r, c=c, piece=p)
             if cord_piece in visited:
@@ -102,10 +102,10 @@ def remove_block(board: Board, block: Block):
     logger.debug(f"removing block:{block}")
 
     for cp in block.cord_pieces:
-        board.set_piece(cp.r, cp.c, Piece.BLANK)
+        board.set_piece(cp.r, cp.c, Piece.B)
 
 
-class GoState(BoardState):
+class GoState(State):
     last_dead_cord_piece: CordPiece = None
 
 
@@ -139,7 +139,7 @@ class BaseGo(BoardEnv):
 
         for r in range(cls.board_size):
             for c in range(cls.board_size):
-                if board.get_piece(r, c) != Piece.BLANK:
+                if board.get_piece(r, c) != Piece.B:
                     continue
                 cord_piece = CordPiece(r=r, c=c, piece=state.piece)
                 if cord_piece in cand_kill_map:
@@ -154,7 +154,7 @@ class BaseGo(BoardEnv):
                     block = get_block(board, cord_piece)
                     if block.is_alive:
                         actions.append(cls.action_cls(r=r, c=c))
-                    board.set_piece(row=r, col=c, piece=Piece.BLANK)
+                    board.set_piece(row=r, col=c, piece=Piece.B)
 
         return actions
 
@@ -215,7 +215,7 @@ XX__
 ____
 ____
     """
-    env_cls = Go4
+    env = Go4
     action_cls = Go4.action_cls
     board = Board.from_str(board_str)
     piece = Piece.O
@@ -224,7 +224,7 @@ ____
     logger.info(state.render_str())
 
     action = action_cls(r=0, c=0, piece=piece)
-    transfer_info = env_cls.transfer(state=state, action=action)
+    transfer_info = env.transfer(state=state, action=action)
     logger.info(transfer_info)
     next_state = transfer_info.next_state
     logger.info(next_state.render_str())

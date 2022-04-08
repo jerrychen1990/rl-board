@@ -25,7 +25,7 @@ from torch.optim import Adam, Optimizer
 from torch.optim.lr_scheduler import StepLR, ExponentialLR
 
 from rlb.actor_critic import ActorCritic
-from rlb.board_core import Piece, BoardEnv, ACInfo, BoardState
+from rlb.core import Piece, BoardEnv, ACInfo, State
 from rlb.core import Context
 
 logger = logging.getLogger(__name__)
@@ -77,7 +77,7 @@ class ModuleActorCritic(Module, ActorCritic):
 
             for batch in get_batched_data(ac_infos, mini_batch_size):
                 losses.append(self.learn_on_batch(ac_infos=batch, optimizer=optimizer)[-1].detach().item())
-            loss = sum(losses)/len(losses)
+            loss = sum(losses) / len(losses)
             if (epoch + 1) % interval == 0:
                 schedule_info = f"[lr:{schedule.get_last_lr()[0]:1.6f}]" if schedule else ""
                 logger.info(f"[{epoch + 1}/{epochs}] {schedule_info} {loss=:2.3f}")
@@ -92,28 +92,28 @@ class ModuleActorCritic(Module, ActorCritic):
     def forward_critic(self, x):
         raise NotImplementedError
 
-    def state2tensor(self, state: BoardState) -> Tensor:
+    def state2tensor(self, state: State) -> Tensor:
         return torch.from_numpy(self.state2array(state)).float()
 
     @abstractmethod
-    def state2array(self, state: BoardState) -> np.array:
+    def state2array(self, state: State) -> np.array:
         raise NotImplementedError
 
-    @lru_cache(maxsize=None)
-    def act_and_criticize(self, state: BoardState) -> Tuple[List[float], float]:
+    @lru_cache(maxsize=5000)
+    def act_and_criticize(self, state: State) -> Tuple[List[float], float]:
         x = self.state2tensor(state)
         weights, value = self.forward(x)
         probs, value = F.softmax(weights, dim=-1).detach().numpy(), value.item()
         return probs, value
 
-    @lru_cache(maxsize=None)
-    def criticize(self, state: BoardState) -> float:
+    @lru_cache(maxsize=5000)
+    def criticize(self, state: State) -> float:
         x = self.state2tensor(state)
         features = self.encoder(x)
         value = self.critic_decoder(features).item()
         return value
 
-    @lru_cache(maxsize=None)
+    @lru_cache(maxsize=5000)
     def act(self, state) -> List[float]:
         x = self.state2tensor(state)
         features = self.encoder(x)
@@ -222,21 +222,21 @@ class BoardMLPActorCritic(MLPActorCritic):
         self.board_size = board_size
         super(BoardMLPActorCritic, self).__init__(*args, **kwargs)
 
-    def state2array(self, state: BoardState) -> np.array:
+    def state2array(self, state: State) -> np.array:
         t = []
-        for row in state.board.rows:
+        for row in state.get_board().gen_rows():
             for e in row:
-                if e == Piece.BLANK:
+                if e == Piece.B:
                     t.append(0)
                 elif e == state.piece:
                     t.append(1)
                 else:
                     t.append(-1)
-        t = np.array(t + [state.pass_num])
+        t = np.array(t)
         return t
 
     def input_shape(self):
-        return self.board_size * self.board_size + 1,
+        return self.board_size * self.board_size,
 
 
 class BoardCNNActorCritic(CNNActorCritic, ABC):
@@ -254,7 +254,7 @@ class BoardCNNActorCritic(CNNActorCritic, ABC):
         for row in b:
             tmp = []
             for e in row:
-                if e == Piece.BLANK:
+                if e == Piece.B:
                     tmp.append([1, 0, 0])
                 elif e == p:
                     tmp.append([0, 1, 0])
@@ -265,16 +265,14 @@ class BoardCNNActorCritic(CNNActorCritic, ABC):
         return t
 
 
-def get_model_cls(env_cls, model_type):
+def get_model_cls(model_type: str):
     _ac_model_dict = {
-        (BoardEnv, "MLP"): BoardMLPActorCritic,
-        (BoardEnv, "CNN"): BoardCNNActorCritic
+        "MLP": BoardMLPActorCritic,
+        "CNN": BoardCNNActorCritic
     }
-    key = env_cls, model_type
-    for (cls, mt), model_cls in _ac_model_dict.items():
-        if issubclass(env_cls, cls) and mt == model_type:
-            return model_cls
-    raise Exception(f"invalid key:{key}, valid keys:{_ac_model_dict.keys()}")
+    if model_type in _ac_model_dict:
+        return _ac_model_dict[model_type]
+    raise Exception(f"invalid model_type:{model_type}, valid keys:{_ac_model_dict.keys()}")
 
 
 def get_optimizer_cls(optimizer_name):
@@ -308,7 +306,7 @@ def load_ac_model(context: Context, ckpt: int):
     return ac_model
 
 
-def build_ac_model(env_cls: Type[BoardEnv], model_type: str, torch_kwargs: dict):
-    ac_model_cls = get_model_cls(env_cls, model_type)
-    ac_model = ac_model_cls(**torch_kwargs, action_num=env_cls.action_num, board_size=env_cls.board_size)
+def build_ac_model(env: BoardEnv, model_type: str, torch_kwargs: dict):
+    ac_model_cls = get_model_cls(model_type)
+    ac_model = ac_model_cls(**torch_kwargs, action_num=env.action_num, board_size=env.board_size)
     return ac_model

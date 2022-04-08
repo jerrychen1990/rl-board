@@ -16,20 +16,21 @@ import click
 from snippets import jload, jdumps
 
 from rlb.drl import ReinforcementLearning
-from rlb.gobang import __all__env_cls__
+from rlb.gobang import TICTACTOE
 
-env_cls_dict = {e.__name__: e for e in __all__env_cls__}
+envs = [TICTACTOE]
+
+env_dict = {e.name: e for e in envs}
 
 logger = logging.getLogger(__name__)
 
 
 @click.command()
-@click.option('--env_cls_name', help='env_cls')
+@click.option('--env_cls_name', help='env')
 @click.option('--config_name', help='config_name')
-def test_drl(env_cls_name, config_name, eval_episodes=100):
-    env_cls = env_cls_dict[env_cls_name]
-    env = env_cls()
-    config_path = os.path.join("configs", env.__class__.__name__, config_name)
+def test_drl(env_name, config_name, eval_episodes=100):
+    env = env_dict(env_name)
+    config_path = os.path.join("configs", env_name, config_name)
     logger.info(f"{config_path=}")
 
     exp_name = Path(config_path).stem

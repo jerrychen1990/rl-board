@@ -13,7 +13,7 @@ import os
 
 import torch
 
-from rlb.board_core import BoardEnv, Episode, Env
+from rlb.core import BoardEnv, Episode
 from rlb.client import get_ckpt, puts_ac_infos
 from rlb.core import Agent, Context
 from rlb.engine import AbsCallback, RecordCallback, run_board_games
@@ -47,7 +47,7 @@ class SelfPlayCallback(AbsCallback):
 
 
 def self_play(agent: Agent, env: BoardEnv, episodes: int, context: Context,
-              value_decay=1., record_episode_size=None, show_episode_size=None, is_render=False):
+              value_decay=1., record_episode_size=None, is_render=False):
     agents = [agent, agent]
 
     callbacks = [SelfPlayCallback(agent=agent, value_decay=value_decay)]
@@ -56,22 +56,20 @@ def self_play(agent: Agent, env: BoardEnv, episodes: int, context: Context,
         callbacks.append(record_callback)
 
     history, scoreboard = run_board_games(agents=agents, episodes=episodes, env=env, mode="train",
-                                          shuffle=True, is_render=is_render, callbacks=callbacks,
-                                          show_episode_size=show_episode_size)
+                                          is_shuffle=True, is_render=is_render, callbacks=callbacks)
     return history, scoreboard
 
 
 class SelfPlayer:
-    def __init__(self, agent: Agent, env: Env, context: Context):
+    def __init__(self, agent: Agent, env: BoardEnv, context: Context):
         self.agent = agent
         self.env = env
         self.context = context
 
     def self_play(self, episodes: int, value_decay=1.,
-                  record_episode_size=None, show_episode_size=None, is_render=False):
+                  record_episode_size=None, is_render=False):
         return self_play(context=self.context, agent=self.agent, env=self.env, episodes=episodes,
                          value_decay=value_decay, record_episode_size=record_episode_size,
-                         show_episode_size=show_episode_size,
                          is_render=is_render)
 
     def run(self):

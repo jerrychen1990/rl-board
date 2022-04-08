@@ -11,141 +11,114 @@
 import copy
 import logging
 import types
-from collections import defaultdict
-from typing import List, Type, Tuple
+from functools import lru_cache
+from typing import List, Type, Set
 
-from pydantic import BaseModel
-from snippets import flat
-
-from rlb.board_core import Board, Piece, BoardEnv, BoardState, CordPiece, Cord
-from rlb.core import Action, TransferInfo, State
-from rlb.gobang import BoardAction
+from rlb.core import TransferInfo, Board, Piece, BoardEnv, State, CordP, Cord, Action, Edge
 
 logger = logging.getLogger(__name__)
 
 
-class OthelloAction(BoardAction):
-    pass
-
-
-class BaseOthello(BoardEnv):
+class Othello(BoardEnv):
     draw2loss: bool = False
     pieces: list = [Piece.X, Piece.O]
 
-    @classmethod
-    def get_valid_cord_pieces_by_line(cls, line: List[CordPiece]) -> List[CordPiece]:
-        idx = 0
-        contain_piece = set()
-        cord_pieces = []
-        while idx < len(line) and line[idx].piece == Piece.BLANK:
-            idx += 1
-        if 0 < idx < len(line):
-            cord_piece: CordPiece = copy.copy(line[idx - 1])
-            cord_piece.piece = cls._get_next_piece(line[idx].piece)
-            cord_pieces.append(cord_piece)
-
-        while idx < len(line) and line[idx].piece != Piece.BLANK:
-            contain_piece.add(line[idx].piece)
-            idx += 1
-        if idx < len(line):
-            cord_piece: CordPiece = copy.copy(line[idx])
-            cord_piece.piece = cls._get_next_piece(line[idx - 1].piece)
-            cord_pieces.append(cord_piece)
-        cord_pieces = [e for e in cord_pieces if e.piece in contain_piece]
-        return cord_pieces
-
-    def _reset(self):
+    def reset(self) -> State:
         assert self.board_size % 2 == 0
         mid = self.board_size // 2
         x, o = self.pieces[0], self.pieces[1]
-        board = Board(row_num=self.board_size, col_num=self.board_size)
+        board = Board.get_empty_board(self.board_size, self.board_size)
         board.set_piece(mid - 1, mid - 1, x)
         board.set_piece(mid, mid, x)
         board.set_piece(mid - 1, mid, o)
         board.set_piece(mid, mid - 1, o)
+        return State.from_board_piece(board, self.pieces[0])
 
-        self._state = BoardState(board=board, piece=Piece.X, pass_num=0)
+    @lru_cache(maxsize=5000)
+    def get_valid_cordps_by_board(self, board: Board) -> List[CordP]:
+        cps = set()
+        for line in board.gen_all_lines(return_cordp=True):
+            cps |= get_cordp_by_line(line)
+        return list(sorted(cps))
 
-    @classmethod
-    def _on_pass_action(cls, state: BoardState) -> TransferInfo:
-        logger.debug("on pass")
-        next_state = copy.deepcopy(state)
-        next_state.piece = cls._get_next_piece(state.piece)
-        transfer_info = TransferInfo(next_state=next_state, reward=0., is_done=False, extra_info=dict())
-        return transfer_info
+    def judge_state(self, state: State) -> Edge:
+        board = state.get_board()
+        is_done = not self.get_valid_cordps_by_board(board)
+        win_piece = None
+        reward = 0.
+        if is_done:
+            piece_dict = board.count_pieces()
+            max_cnt = max(piece_dict.values())
+            win_pieces = [k for k, v in piece_dict.items() if v == max_cnt]
+            win_piece = win_pieces[0] if len(win_pieces) == 1 else None
+        return Edge(win_piece=win_piece, is_done=is_done, reward=reward)
 
-    @classmethod
-    def _on_invalid_action(cls, state: BoardState, action: OthelloAction) -> TransferInfo:
-        logger.debug(f"invalid action :{action}, will pass")
+    def get_valid_actions(self, state: State) -> List[Action]:
+        board, piece = state.get_board(), state.piece
+        cordps = self.get_valid_cordps_by_board(board)
+        actions = [Action(r=cp.r, c=cp.c, idx=cp.r * self.board_size + cp.c) for cp in cordps if cp.p == piece]
+        return actions
 
-        return cls._on_pass_action(state)
-        next_state = copy.deepcopy(state)
-        transfer_info = TransferInfo(next_state=next_state, reward=0., is_done=False, extra_info=dict(valid=False))
-        return transfer_info
-
-    @classmethod
-    def _on_valid_action(cls, state: BoardState, action: OthelloAction) -> TransferInfo:
-        next_state = copy.deepcopy(state)
-        board, piece = next_state.board, next_state.piece
+    def on_valid_action(self, state: State, action: Action) -> TransferInfo:
+        piece = state.piece
         r, c = action.r, action.c
-        assert board.get_piece(r, c) == Piece.BLANK
-        change_cords = set()
-        op_piece = cls._get_next_piece(piece)
+        next_board = state.to_new_board()
+        next_piece = self.get_next_piece(piece)
 
+        assert next_board.get_piece(r, c) == Piece.B
+        change_cordps = set()
         for dr in [0, 1, -1]:
             for dc in [0, 1, -1]:
                 if dr == dc == 0:
                     continue
                 tmp = set()
-                for cp in board.gen_cp_iterator(r, c, dr, dc, False):
-                    if cp.piece == op_piece:
-                        tmp.add(Cord(**cp.dict()))
+                for cp in next_board.gen_line_with_dir(r, c, dr, dc, include_beg=False, return_cordp=True):
+                    if cp.p == next_piece:
+                        tmp.add(cp)
                     else:
-                        if cp.piece == piece:
-                            change_cords |= tmp
+                        if cp.p == piece:
+                            change_cordps |= tmp
                         break
 
-        assert change_cords
-        change_cords.add(Cord(r=r, c=c))
+        assert change_cordps
+        change_cordps.add(Cord(r=r, c=c))
 
-        logger.info(change_cords)
-        for cord in change_cords:
-            board.set_piece(cord.r, cord.c, piece)
-        next_state.piece = op_piece
-        extra_info = dict()
-        is_done = board.is_full()
-        if is_done:
-            piece_dict = board.count_pieces()
-            extra_info["win_piece"] = piece_dict.keys()[0]
-        return TransferInfo(next_state=next_state, reward=0., is_done=is_done, extra_info=extra_info)
-
-    @classmethod
-    def get_valid_actions_by_state(cls, state: BoardState) -> List[OthelloAction]:
-        board, piece = state.board, state.piece
-        lines = board.get_lines()
-        valid_actions = set()
-        for line in lines:
-            cord_pieces = cls.get_valid_cord_pieces_by_line(line)
-            for cord_piece in cord_pieces:
-                if cord_piece.piece == piece:
-                    valid_actions.add(cls.action_cls(r=cord_piece.r, c=cord_piece.c))
-
-        return list(valid_actions)
+        for cordp in change_cordps:
+            next_board.set_piece(cordp.r, cordp.c, piece)
+        next_state = State.from_board_piece(next_board, next_piece)
+        edge = self.judge_state(next_state)
+        return TransferInfo(next_state=next_state, **edge.dict(),extra_info={})
 
 
-def build_othello_cls(name, board_size: int) -> Type[BaseOthello]:
-    action_num = board_size ** 2
-    action_cls = types.new_class(name=f"{name}Action", bases=(BoardAction,),
-                                 kwds={}, exec_body=lambda x: x.update(_board_size=board_size))
+def get_cordp_by_line(line: List[CordP]) -> Set[CordP]:
+    pre = None
+    start = None
+    pairs = []
+    cordps = set()
+    for cp in line:
+        if pre and cp.p != pre.p:
+            if start:
+                pairs.append((start, cp))
+            start = pre if cp.p != Piece.B else None
+        pre = cp
 
-    attrs = dict(board_size=board_size, action_num=action_num, action_cls=action_cls)
-    cls = types.new_class(name=name, bases=(BaseOthello,), kwds={}, exec_body=lambda x: x.update(**attrs))
-    cls.__module__ = __name__
-    return cls
+    for s, e in pairs:
+        if s and e:
+            if s.p == Piece.B and e.p != Piece.B:
+                cp = CordP(s.r, s.c, e.p)
+                cordps.add(cp)
+            if e.p == Piece.B and s.p != Piece.B:
+                cp = CordP(e.r, e.c, s.p)
+                cordps.add(cp)
+    return cordps
 
 
-Othello4 = build_othello_cls(name="Othello4", board_size=4)
-Othello8 = build_othello_cls(name="Othello8", board_size=8)
-Othello = build_othello_cls(name="Othello", board_size=8)
+OTHELLO = Othello(name="othello", board_size=8)
+OTHELLO4 = Othello(name="othello4", board_size=4)
 
-__all__env_cls__ = [Othello4, Othello8, Othello]
+if __name__ == "__main__":
+    line = "__XXO_OOXOO_OO"
+    line = [CordP(r=0, c=c, p=Piece.from_str(s)) for c, s in enumerate(line)]
+    for cp in line:
+        logger.info(cp)
+    logger.info(sorted(get_cordp_by_line(line)))

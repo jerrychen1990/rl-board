@@ -20,7 +20,7 @@ from snippets import flat, discard_kwarg
 from tqdm import tqdm
 
 from rlb.actor_critic import ActorCriticAgent
-from rlb.board_core import ACInfo, Episode, BoardState
+from rlb.core import ACInfo, Episode, State
 from rlb.engine import compare_agents
 from rlb.mcst import MCSTAgent
 from rlb.model import ModuleActorCritic
@@ -77,7 +77,7 @@ def evaluate_episodes(episodes: List[Episode], perfect_ac_infos: List[ACInfo], s
     if show_detail:
         infos = sorted(infos.items(), key=lambda x: sum([len(e) for e in x[1].values()]), reverse=True)
         for state, action_dict in infos[:5]:
-            logger.info(BoardState.from_obs(state))
+            logger.info(State.from_obs(state))
             for action, probs in sorted(action_dict.items(), key=lambda x: len(x[1]), reverse=True):
                 logger.info(f"action:{action} visited {len(probs)} times")
                 for prob in probs[:5]:
@@ -88,9 +88,9 @@ def evaluate_episodes(episodes: List[Episode], perfect_ac_infos: List[ACInfo], s
 
 
 class Evaluator:
-    def __init__(self, env_cls, perfect_ac_infos: List[ACInfo], best_model,
+    def __init__(self, env, perfect_ac_infos: List[ACInfo], best_model,
                  perfect_agent=None, *args, **kwargs):
-        self.env_cls = env_cls
+        self.env = env
         self.best_acc = 0.
         self.best_hard_acc = 0.
         self.best_loss = 100.
@@ -121,7 +121,7 @@ class Evaluator:
         return delta_loss < 0
 
     def _eval_agent(self, model, simulate_num):
-        mcst_agent = MCSTAgent(name="evaluate_mcst_agent", ac_model=model, env_cls=self.env_cls,
+        mcst_agent = MCSTAgent(name="evaluate_mcst_agent", ac_model=model, env=self.env,
                                simulate_num=simulate_num)
         steps = self.perfect_ac_infos[:10]
         agent_probs = []
@@ -144,17 +144,17 @@ class Evaluator:
     def _compare_with_cur_best(self, model, episodes, agent_type="mcst", threshold=0.5, agent_kwargs={}):
         logger.info(f"compare current agent with best agent, {agent_type=}")
         if agent_type == "mcst":
-            best_agent = MCSTAgent(name="best_mcst_agent", ac_model=self.best_model, env_cls=self.env_cls,
+            best_agent = MCSTAgent(name="best_mcst_agent", ac_model=self.best_model, env=self.env,
                                    **agent_kwargs)
-            cur_agent = MCSTAgent(name="current_mcst_agent", ac_model=model, env_cls=self.env_cls, **agent_kwargs)
+            cur_agent = MCSTAgent(name="current_mcst_agent", ac_model=model, env=self.env, **agent_kwargs)
         elif agent_type == "ac":
-            best_agent = ActorCriticAgent(name="best_ac_agent", ac_model=self.best_model, env_cls=self.env_cls,
+            best_agent = ActorCriticAgent(name="best_ac_agent", ac_model=self.best_model, env=self.env,
                                           **agent_kwargs)
-            cur_agent = ActorCriticAgent(name="current_ac_agent", ac_model=model, env_cls=self.env_cls, **agent_kwargs)
+            cur_agent = ActorCriticAgent(name="current_ac_agent", ac_model=model, env=self.env, **agent_kwargs)
         else:
             raise ValueError(f"invalid agent_type:{agent_type}")
 
-        scoreboard, win_rate = compare_agents(agent=cur_agent, tgt_agent=best_agent, env=self.env_cls(),
+        scoreboard, win_rate = compare_agents(agent=cur_agent, tgt_agent=best_agent, env=self.env,
                                               episodes=episodes)
         logger.info(f"{scoreboard=}, {win_rate=:2.3f}")
 
@@ -162,9 +162,9 @@ class Evaluator:
 
     def _compare_mcst_with_ac(self, model, episodes, threshold=0.5, agent_kwargs={}, **kwargs):
         logger.info(f"compare current ac agent with current mcst_agent")
-        mcst_agent = MCSTAgent(name="current_mcst_agent", ac_model=model, env_cls=self.env_cls, **agent_kwargs)
-        ac_agent = ActorCriticAgent(name="current_ac_agent", ac_model=model, env_cls=self.env_cls, **agent_kwargs)
-        scoreboard, win_rate = compare_agents(agent=mcst_agent, tgt_agent=ac_agent, env=self.env_cls(),
+        mcst_agent = MCSTAgent(name="current_mcst_agent", ac_model=model, env=self.env, **agent_kwargs)
+        ac_agent = ActorCriticAgent(name="current_ac_agent", ac_model=model, env=self.env, **agent_kwargs)
+        scoreboard, win_rate = compare_agents(agent=mcst_agent, tgt_agent=ac_agent, env=self.env,
                                               episodes=episodes)
         logger.info(f"{scoreboard=}, {win_rate=:2.3f}")
 
@@ -173,13 +173,13 @@ class Evaluator:
     def _compare_with_perfect(self, model, episodes, agent_type="mcst", threshold=0.5, agent_kwargs={}):
         logger.info(f"compare current agent with perfect agent,{agent_type=}")
         if agent_type == "mcst":
-            cur_agent = MCSTAgent(name="current_mcst_agent", ac_model=model, env_cls=self.env_cls, **agent_kwargs)
+            cur_agent = MCSTAgent(name="current_mcst_agent", ac_model=model, env=self.env, **agent_kwargs)
         elif agent_type == "ac":
-            cur_agent = ActorCriticAgent(name="current_ac_agent", ac_model=model, env_cls=self.env_cls, **agent_kwargs)
+            cur_agent = ActorCriticAgent(name="current_ac_agent", ac_model=model, env=self.env, **agent_kwargs)
         else:
             raise ValueError(f"invalid agent_type:{agent_type}")
 
-        scoreboard, win_rate = compare_agents(agent=cur_agent, tgt_agent=self.perfect_agent, env=self.env_cls(),
+        scoreboard, win_rate = compare_agents(agent=cur_agent, tgt_agent=self.perfect_agent, env=self.env,
                                               episodes=episodes)
         logger.info(f"{scoreboard=}, {win_rate=:2.3f}")
 
@@ -197,10 +197,10 @@ class Evaluator:
     #     return tag
 
     def evaluate_episodes(self, episodes: List[Episode], show_detail=False):
-        assert self.perfect_ac_infos
-        eval_info = evaluate_episodes(episodes=episodes, show_detail=show_detail,
-                                      perfect_ac_infos=self.perfect_ac_infos)
-        logger.info(f"episodes eval info: {format_dict(eval_info)}")
+        if self.perfect_ac_infos:
+            eval_info = evaluate_episodes(episodes=episodes, show_detail=show_detail,
+                                          perfect_ac_infos=self.perfect_ac_infos)
+            logger.info(f"episodes eval info: {format_dict(eval_info)}")
 
     def evaluate(self, model: ModuleActorCritic, eval_info: dict, agent_kwargs: dict):
         _eval_func_map = {

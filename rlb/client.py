@@ -13,7 +13,7 @@ from typing import List
 
 import requests
 
-from rlb.board_core import ACInfo
+from rlb.engine import ACInfo
 
 logger = logging.getLogger(__name__)
 
@@ -21,7 +21,7 @@ _buffer_url = "http://127.0.0.1:5000"
 
 
 def puts_ac_infos(ac_infos: List[ACInfo]):
-    data = [s.dict() for s in ac_infos]
+    data = [s.to_json_dict() for s in ac_infos]
     resp = requests.post(url=f"{_buffer_url}/puts", json=data)
     resp.raise_for_status()
     # logger.info(resp.json())
@@ -31,7 +31,7 @@ def puts_ac_infos(ac_infos: List[ACInfo]):
 def sample_ac_infos(n):
     resp = requests.get(url=f"{_buffer_url}/sample/{n}")
     resp.raise_for_status()
-    ac_infos = [ACInfo(**e) for e in resp.json()["data"]]
+    ac_infos = [ACInfo.from_json_dict(e) for e in resp.json()["data"]]
     return ac_infos
 
 def get_ac_infos(idx, n):
@@ -40,7 +40,7 @@ def get_ac_infos(idx, n):
     resp.raise_for_status()
     json_resp = resp.json()
     next_idx = json_resp["data"]["idx"]
-    ac_infos = [ACInfo(**e) for e in json_resp["data"]["items"]]
+    ac_infos = [ACInfo.from_json_dict(e) for e in json_resp["data"]["items"]]
     return ac_infos, next_idx
 
 

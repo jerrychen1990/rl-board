@@ -165,3 +165,8 @@ def tuplize(v):
         return tuple([tuplize(e) for e in v])
     return v
 
+
+def show_cache_info(func):
+    cache_info = func.cache_info()
+    hit_rate = cache_info.hits / (cache_info.hits + cache_info.misses)
+    logger.info(f"{func.__name__}'s cache_info:{cache_info}, hit_rate:{hit_rate:2.3f}")

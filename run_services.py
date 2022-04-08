@@ -12,7 +12,7 @@ import click
 import logging
 from flask import Flask, request, jsonify
 
-from rlb.board_core import ACInfo
+from rlb.core import ACInfo
 from rlb.utils import ReplayBuffer
 
 app = Flask(__name__)
@@ -43,7 +43,10 @@ def get_ckpt():
 @app.route('/puts', methods=["POST"])
 def puts():
     content = request.json
-    ac_infos = [ACInfo(**e) for e in content]
+    # content = request.data
+    # logger.info(content)
+
+    ac_infos = [ACInfo.from_json_dict(e) for e in content]
     buffer.puts(ac_infos)
     resp = dict(result="success", data=dict(length=len(buffer), acc_idx=buffer.acc_idx, added=len(ac_infos)))
     # logger.info(resp)
@@ -59,7 +62,7 @@ def sample(n):
         resp = dict(result="fail", data=[])
     else:
         ac_infos = buffer.sample(n)
-        resp = dict(result="success", data=[e.dict() for e in ac_infos])
+        resp = dict(result="success", data=[e.to_json_dict() for e in ac_infos])
     return jsonify(resp)
 
 
@@ -77,7 +80,7 @@ def gets():
         end_idx -= len(buffer)
 
     ac_infos += buffer.items[idx:end_idx]
-    resp = dict(result="success", data=dict(items=[e.dict() for e in ac_infos], idx=end_idx))
+    resp = dict(result="success", data=dict(items=[e.to_json_dict() for e in ac_infos], idx=end_idx))
     return jsonify(resp)
 
 

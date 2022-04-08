@@ -18,9 +18,8 @@ from pydantic import BaseModel, Field
 from snippets import discard_kwarg
 from torch.nn import Module
 
-from rlb.board_core import BoardState
 from rlb.model import ModuleActorCritic
-from rlb.core import Agent, Env, TransferInfo, Action
+from rlb.core import Agent, BoardEnv, TransferInfo, Action, State
 from rlb.utils import sample_by_weights, format_dict
 
 logger = logging.getLogger(__name__)
@@ -52,7 +51,7 @@ def visit_tau(n, tau):
 
 
 class Node:
-    def __init__(self, state:BoardState):
+    def __init__(self, state: State):
         self.state = state
         self.children: Dict[Action, Tuple[Info, Node]] = None
         self.value = 0.
@@ -97,17 +96,16 @@ class Node:
 
         if logger.level == logging.DEBUG:
             details.sort(key=lambda x: x[-1], reverse=True)
-            logger.debug(f"details({mode}), state:[{self.state}]:")
+            logger.debug(f"choose child for {self} with {mode} mode")
             for action, info, node, extra_info, weight in details:
                 logger.debug(f"action:{action}, info:{info},  extra_info:{format_dict(extra_info)}, "
                              f"weight:{weight:8.3f}, next_node:{node}")
         return details
 
-    def __str__(self):
-        return f"{self.state}[{self.value:2.3f}]"
-
     def __repr__(self):
-        return str(self)
+        s_str = str(self.state)
+        return f"{s_str}[{self.value:2.3f}]"
+
 
 
 class MCST:
@@ -148,7 +146,7 @@ class MCST:
                     transfer_info: TransferInfo = self.transfer_func(state=node.state, action=action)
                     next_node = self.get_node(transfer_info.next_state)
                     next_node.is_done = transfer_info.is_done
-                    prob = action_probs[action.to_idx()]
+                    prob = action_probs[action.idx]
                     node.children[action] = Info(p=prob), next_node
         node.value = value
         logger.debug(f"set value:{value:2.3f} to node:{node}")
@@ -196,18 +194,18 @@ class TauSchedule:
 
 
 class MCSTAgent(Agent):
-    def __init__(self, env_cls: Type[Env], ac_model: ModuleActorCritic, simulate_kwargs: dict,
+    def __init__(self, env: BoardEnv, ac_model: ModuleActorCritic, simulate_kwargs: dict,
                  tau_kwargs=dict(tau=1.), **kwargs):
         super(MCSTAgent, self).__init__(action_num=ac_model.action_num, **kwargs)
-        self.env_cls = env_cls
+        self.env = env
         self.ac_model = ac_model
-        self.mcst = MCST(transfer_func=env_cls.transfer, valid_action_func=env_cls.get_valid_actions_by_state,
+        self.mcst = MCST(transfer_func=env.transfer, valid_action_func=env.get_valid_actions,
                          action_num=self.action_num)
         self.simulate_kwargs = copy.copy(simulate_kwargs)
         self.simulate_num = self.simulate_kwargs.pop("simulate_num")
         self.tau_schedule = TauSchedule(**tau_kwargs)
 
-    def get_weights(self, state:BoardState, mode:str, step_idx, **kwargs) -> List[float]:
+    def get_weights(self, state: State, mode: str, step_idx, **kwargs) -> List[float]:
         node = self.mcst.get_node(state)
         logger.debug(f"simulating for {self.simulate_num} times...")
         simulate_kwargs = copy.copy(self.simulate_kwargs)
@@ -224,7 +222,7 @@ class MCSTAgent(Agent):
         details = node.get_choose_child_detail(mode="visit_tau", tau=tau)
         weights = [0.] * self.action_num
         for action, info, node, extra_info, weight in details:
-            action_idx = action.to_idx()
+            action_idx = action.idx
             weights[action_idx] = weight
         # logger.info(weights)
         return weights

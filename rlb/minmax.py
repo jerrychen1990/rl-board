@@ -19,15 +19,16 @@ from pydantic import BaseModel
 from snippets import pdump, pload
 
 from rlb.actor_critic import ActorCritic
-from rlb.board_core import ACInfo, BoardState
-from rlb.core import Env, Agent
+from rlb.core import BoardEnv, Agent, State, ACInfo
 from rlb.utils import weights2probs
 
 logger = logging.getLogger(__name__)
 
 
 class Node(BaseModel):
-    state: BoardState
+    class Config:
+        arbitrary_types_allowed = True
+    state: State
     value: Optional[float]
     children: Optional[Dict[int, Node]]
     max_actions: Set[int] = None
@@ -63,30 +64,29 @@ class MinMaxAgent(Agent):
             return self.nodes[state]
         return self.creat_node(state)
 
-    def _expand_node(self, node: Node, env_cls: Type[Env]):
+    def _expand_node(self, node: Node, env: BoardEnv):
         node.children = dict()
-        valid_actions = env_cls.get_valid_actions_by_state(state=node.state)
+        valid_actions = env.get_valid_actions(state=node.state)
 
         for action in valid_actions:
-            transfer_info = env_cls.transfer(node.state, action)
+            transfer_info = env.transfer(node.state, action)
             next_state = transfer_info.next_state
             next_node = self.get_node(next_state)
             if transfer_info.is_done:
-                win_piece = transfer_info.extra_info.get("win_piece")
+                win_piece = transfer_info.win_piece
                 if win_piece:
                     next_node.value = 1 if win_piece == next_node.piece else -1
                 else:
                     next_node.value = 0
+            node.children[action.idx] = next_node
 
-            node.children[action.to_idx()] = next_node
-
-    def get_value(self, node: Node, env_cls: Type[Env], value_decay: float, stack: List) -> float:
+    def get_value(self, node: Node, env: BoardEnv, value_decay: float, stack: List) -> float:
         # logging.info(node)
         if node.value is None:
             stack.append(node.state)
 
             if not node.is_expanded():
-                self._expand_node(node=node, env_cls=env_cls)
+                self._expand_node(node=node, env=env)
 
             max_value = -1.
             max_actions = set()
@@ -94,7 +94,7 @@ class MinMaxAgent(Agent):
             for action_idx, n in node.children.items():
                 if n.state in stack:
                     continue
-                next_value = self.get_value(n, env_cls, value_decay, stack)
+                next_value = self.get_value(n, env, value_decay, stack)
                 value = next_value if node.piece == n.piece else -next_value
                 value *= value_decay
                 if value >= max_value:
@@ -110,14 +110,14 @@ class MinMaxAgent(Agent):
             stack.pop()
         return node.value
 
-    def train(self, env_cls: Type[Env], value_decay=1., overwrite_cache=False):
+    def train(self, env: BoardEnv, value_decay=1., overwrite_cache=False):
         if not self.is_trained:
-            state = env_cls().reset()
+            state = env.reset()
             self.nodes = dict()
-            cache_path = os.path.join(f"/tmp/rlb_cache/{env_cls.__name__}/{value_decay}.pkl")
+            cache_path = os.path.join(f"/tmp/rlb_cache/{env.name}/{value_decay}.pkl")
             if not os.path.exists(cache_path) or overwrite_cache:
                 self.root = self.get_node(state)
-                self.get_value(self.root, env_cls=env_cls, value_decay=value_decay, stack=[])
+                self.get_value(self.root, env=env, value_decay=value_decay, stack=[])
                 logger.info(f"minmax training done, dumping to {cache_path}")
                 pdump(self.nodes, cache_path)
             else:

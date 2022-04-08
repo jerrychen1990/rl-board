@@ -14,7 +14,7 @@ import os
 import shutil
 import warnings
 
-from rlb.utils import save_torch_model
+from rlb.utils import save_torch_model, show_cache_info
 
 warnings.simplefilter("ignore", UserWarning)
 
@@ -41,31 +41,28 @@ class ReinforcementLearning:
         self.name = name
         self.config = config
         self.env = env
-        self.env_cls = env.__class__
         self.action_num = env.action_num
         if base_dir:
             self.base_dir = base_dir
         else:
-            self.base_dir = os.path.join(f"{cur_dir}/../experiments", self.env_cls.__name__, self.name)
+            self.base_dir = os.path.join(f"{cur_dir}/../experiments", self.env.name, self.name)
             if not overwrite_time:
                 self.base_dir = os.path.join(self.base_dir, get_current_datetime_str())
         logger.info(f"{self.base_dir=}")
         self.context = Context(base_dir=self.base_dir)
         self.perfect_agent = MinMaxAgent(name="perfect_agent", action_num=self.action_num)
 
-    def _prepare_agents(self, value_decay):
+    def _prepare_agents(self):
         ac_model_kwargs = self.config["ac_model_kwargs"]
         ckpt = ac_model_kwargs.pop("ckpt", None)
         if ckpt:
             ac_model = load_ac_model(context=self.context, ckpt=-1)
         else:
-            ac_model = build_ac_model(env_cls=self.env_cls, **ac_model_kwargs)
+            ac_model = build_ac_model(env=self.env, **ac_model_kwargs)
         logger.info(f"ac_model:{ac_model}")
 
-        mcst_agent = MCSTAgent(name="mcst_agent", env_cls=self.env_cls,
+        mcst_agent = MCSTAgent(name="mcst_agent", env=self.env,
                                ac_model=ac_model, **self.config["mcst_kwargs"])
-
-        self.perfect_agent.train(env_cls=self.env_cls, value_decay=value_decay)
         return ac_model, mcst_agent
 
     def _prepare_components(self, ac_model, mcst_agent, always_update):
@@ -92,7 +89,7 @@ class ReinforcementLearning:
             perfect_ac_infos, perfect_agent = None, None
 
         evaluator = Evaluator(name="evaluate_process", perfect_ac_infos=perfect_ac_infos, context=self.context,
-                              env_cls=self.env_cls, best_model=best_model, perfect_agent=perfect_agent)
+                              env=self.env, best_model=best_model, perfect_agent=perfect_agent)
 
         return self_player, optimizer, evaluator
 
@@ -118,7 +115,7 @@ class ReinforcementLearning:
         optimize_kwargs = self.config["optimize_kwargs"]
         evaluate_kwargs = self.config["evaluate_kwargs"]
 
-        playing_model, mcst_agent = self._prepare_agents(value_decay=value_decay)
+        playing_model, mcst_agent = self._prepare_agents()
         self_player, optimizer, evaluator = self._prepare_components(playing_model, mcst_agent, always_update)
         training_model = optimizer.ac_model
 
@@ -134,11 +131,9 @@ class ReinforcementLearning:
             logger.info(f"epoch:{epoch + 1}/{epochs}")
 
             if not supervised:
-                with LogTimeCost(info=f"self_play:{epoch + 1}", level=logging.INFO):
+                with LogTimeCost(info=f"self_play-{epoch + 1}", level=logging.INFO):
                     logger.info("running self play")
-                    history, scoreboard = self_player.self_play(episodes=epoch_episodes, value_decay=value_decay,
-                                                                show_episode_size=max(epoch_episodes // 5, 1))
-
+                    history, scoreboard = self_player.self_play(episodes=epoch_episodes, value_decay=value_decay)
                     record_path = os.path.join(self.context.record_dir,
                                                f"{total_episodes}-{total_episodes + len(history)}.jsonl")
                     jdump_lines(history, record_path)
@@ -147,17 +142,17 @@ class ReinforcementLearning:
                     puts_ac_infos(ac_infos)
                     total_episodes += len(history)
 
-            with LogTimeCost(info=f"optimize:{epoch + 1}", level=logging.INFO):
+                    show_cache_info(playing_model.act_and_criticize)
+
+            with LogTimeCost(info=f"optimize-{epoch + 1}", level=logging.INFO):
                 logger.info("running optimize")
                 optimizer.optimize_one_ckpt(optimize_steps, optimize_batch_size,
                                             actor_loss_type=optimize_kwargs["actor_loss_type"])
                 optimizer.schedule.step()
                 optimizer.save_model()
-                logger.info(f"cache_info:{playing_model.act_and_criticize.cache_info()}")
-                playing_model.act_and_criticize.cache_clear()
+                training_model.act_and_criticize.cache_clear()
 
-
-            with LogTimeCost(info=f"evaluate:{epoch + 1}", level=logging.INFO):
+            with LogTimeCost(info=f"evaluate-{epoch + 1}", level=logging.INFO):
                 logger.info(f"running evaluate on ckpt:{optimizer.step}")
                 if not supervised:
                     evaluator.evaluate_episodes(episodes=history)
@@ -169,6 +164,7 @@ class ReinforcementLearning:
                     save_torch_model(model=training_model, path=self.context.best_model_path)
                     logger.info("updating best model")
                     playing_model.load_state_dict(training_model.state_dict())
+                    playing_model.act_and_criticize.cache_clear()
 
         logger.info("saving the model after training")
         save_torch_model(playing_model, path=self.context.best_model_path)
@@ -213,7 +209,7 @@ class ReinforcementLearning:
             processes.append(optimize_process)
 
         evaluate_process = Evaluator(name="evaluate_process", perfect_ac_infos=perfect_ac_infos,
-                                     env_cls=self.env_cls,
+                                     env=self.env,
                                      conn=conn_eval, best_model=copy.deepcopy(ac_model),
                                      perfect_agent=perfect_agent,
                                      context=self.context, run_kwargs=self.config["evaluate_kwargs"])
@@ -239,19 +235,21 @@ class ReinforcementLearning:
         logger.info("all processes done")
 
     def eval_with_perfect_agent(self, episodes: int):
-        assert self.perfect_agent.is_trained
-        logger.info("evaluate best agent with perfect agents")
-        ac_model = load_ac_model(context=self.context, ckpt=-1)
-        mcst_agent = MCSTAgent(name="mcst_agent", env_cls=self.env_cls,
-                               ac_model=ac_model, **self.config["mcst_kwargs"])
-        scoreboard, win_rate = compare_agents_with_detail(agent=mcst_agent, tgt_agent=self.perfect_agent, env=self.env,
-                                                          episodes=episodes)
-        logger.info(f"{scoreboard=}, {win_rate=:2.3f}")
+        if self.perfect_agent.is_trained:
+            logger.info("evaluate best agent with perfect agents")
+            ac_model = load_ac_model(context=self.context, ckpt=-1)
+            mcst_agent = MCSTAgent(name="mcst_agent", env=self.env,
+                                   ac_model=ac_model, **self.config["mcst_kwargs"])
+            scoreboard, win_rate = compare_agents_with_detail(agent=mcst_agent, tgt_agent=self.perfect_agent, env=self.env,
+                                                              episodes=episodes)
+            logger.info(f"{scoreboard=}, {win_rate=:2.3f}")
+        else:
+            logger.info("perfect_agent is not trained.")
 
     def eval_with_random_agent(self, episodes: int):
         logger.info("evaluate best agent with random agents")
         ac_model = load_ac_model(context=self.context, ckpt=-1)
-        mcst_agent = MCSTAgent(name="mcst_agent", env_cls=self.env_cls,
+        mcst_agent = MCSTAgent(name="mcst_agent", env=self.env,
                                ac_model=ac_model, **self.config["mcst_kwargs"])
         random_agent = RandomAgent(name="random_agent", action_num=self.action_num)
         scoreboard, win_rate = compare_agents_with_detail(agent=mcst_agent, tgt_agent=random_agent, env=self.env,
